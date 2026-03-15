@@ -1,0 +1,8 @@
+name: astrbot_plugin_bilibili_spider
+version: 1.0.0
+description: B站视频搜索爬虫插件，支持按播放量/发布时间排序
+author: gaoming
+support_platforms:
+  - qq_official
+  - telegram
+  - discord
