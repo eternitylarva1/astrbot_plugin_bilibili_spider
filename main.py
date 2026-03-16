@@ -26,9 +26,9 @@ class BilibiliSpider:
         self,
         sessdata: str = "",
         tiered_filter: bool = True,
-        tier_5h: float = 2000.0,
-        tier_24h: float = 1500.0,
-        tier_old: float = 1000.0,
+        tier_hours: list = None,
+        tier_thresholds: list = None,
+        default_threshold: float = 1500.0,
     ):
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -53,16 +53,21 @@ class BilibiliSpider:
 
         # 分层筛选配置
         self.tiered_filter = tiered_filter
-        self.tier_5h = tier_5h
-        self.tier_24h = tier_24h
-        self.tier_old = tier_old
+        # 默认分层配置: 5h, 24h, 阈值: 2000, 1500, 1000
+        self.tier_hours = tier_hours if tier_hours else [5, 24]
+        self.tier_thresholds = tier_thresholds if tier_thresholds else [2000, 1500, 1000]
+        self.default_threshold = default_threshold
+        
+        # 构建日志信息
+        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
         
         self.base_url = "https://api.bilibili.com/x/web-interface/search/type"
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         self.session.cookies.update(self.cookies)
         
-        logger.info(f"B站爬虫初始化 | SESSDATA已配置: {bool(sessdata)} | 分层筛选: {tiered_filter} | 阈值: 5h内>{tier_5h}/h, 5-24h>{tier_24h}/h, 24h+>{tier_old}/h")
+        logger.info(f"B站爬虫初始化 | SESSDATA已配置: {bool(sessdata)} | 分层筛选: {tiered_filter} | 阈值: {tier_str} | 统一阈值: {default_threshold}/h")
 
     def search_videos(
         self, keyword: str, page: int = 1, page_size: int = 30, order: str = "pubdate"
@@ -229,24 +234,23 @@ class BilibiliSpider:
 
     def get_tiered_threshold(self, hours_since_publish: float) -> float:
         """根据视频发布时间计算分层阈值"""
-        if hours_since_publish <= 5:
-            return self.tier_5h
-        elif hours_since_publish <= 24:
-            return self.tier_24h
-        else:
-            return self.tier_old
+        for i, hour_limit in enumerate(self.tier_hours):
+            if hours_since_publish <= hour_limit:
+                return self.tier_thresholds[i]
+        # 超过所有时间节点，使用最后一个阈值
+        return self.tier_thresholds[-1]
 
     def check_video_filter(self, video: dict, use_tiered: bool = True) -> bool:
         """检查视频是否满足筛选条件
         
         Args:
             video: 视频信息字典
-            use_tiered: 是否使用分层阈值
+            use_tiered: 是否使用分层阈值（True使用配置的分层，False使用统一阈值）
         """
         play_per_hour = video.get("play_per_hour", 0)
         
-        # 如果未启用分层筛选，使用默认阈值
-        if not self.tiered_filter:
+        # 如果使用分层筛选
+        if use_tiered and self.tiered_filter:
             threshold = 1000
         else:
             hours = video.get("hours_since_publish", 0)
@@ -312,16 +316,28 @@ class BilibiliPlugin(Star):
         
         # 分层筛选配置
         self.tiered_filter = config.get("tiered_filter", True)
-        self.tier_5h = config.get("tier_5h_threshold", 2000.0)
-        self.tier_24h = config.get("tier_24h_threshold", 1500.0)
-        self.tier_old = config.get("tier_old_threshold", 1000.0)
+        
+        # 解析分层时间节点
+        tier_hours_str = config.get("tier_hours", "5,24")
+        self.tier_hours = [int(x.strip()) for x in tier_hours_str.split(",") if x.strip()]
+        
+        # 解析分层阈值
+        tier_thresholds_str = config.get("tier_thresholds", "2000,1500,1000")
+        self.tier_thresholds = [float(x.strip()) for x in tier_thresholds_str.split(",") if x.strip()]
+        
+        # 统一筛选阈值（用户指定数量时使用）
+        self.default_threshold = config.get("default_threshold", 1500.0)
         
         # AI分析配置
         self.analysis_prompt = config.get("analysis_prompt", "请简要总结这些视频的特点和内容，推荐一些高质量的视频，并分析当前的热门趋势")
         self.enable_analysis = config.get("enable_analysis", True)
 
+        # 构建日志信息
+        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        
         logger.info(
-            f"B站爬虫插件已加载 | 关键词: {self.keyword} | 排序: {self.order} | 模式: {'集满' if self.use_collect_mode else '普通'} | 分层筛选: {'启用' if self.tiered_filter else '禁用'} | 阈值: 5h内>{self.tier_5h}/h, 5-24h>{self.tier_24h}/h, 24h+>{self.tier_old}/h"
+            f"B站爬虫插件已加载 | 关键词: {self.keyword} | 排序: {self.order} | 模式: {'集满' if self.use_collect_mode else '普通'} | 分层筛选: {'启用' if self.tiered_filter else '禁用'} | 阈值: {tier_str} | 统一阈值: {self.default_threshold}/h"
         )
 
     @filter.command("b站搜索")
@@ -379,16 +395,30 @@ class BilibiliPlugin(Star):
         # 发送正在搜索的提示
         order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
         loading_msg = f"🔍 正在搜索「{keyword}」...\n"
-        loading_msg += f"   📌 数量: {count} | 筛选: 5h内>{self.tier_5h}/h, 5-24h>{self.tier_24h}/h, 24h+>{self.tier_old}/h | 排序: {order_names.get(self.order, self.order)}"
+        # 判断是否使用用户指定的数量
+        user_specified_count = (len(parts) >= 2 and parts[1].isdigit()) if parts else False
+        
+        # 如果用户指定了数量，使用统一阈值；否则使用分层筛选
+        use_tiered = self.tiered_filter and not user_specified_count
+        
+        # 构建筛选信息
+        if use_tiered:
+            tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+            tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+            filter_info = f"筛选: {tier_str}"
+        else:
+            filter_info = f"统一阈值: >{self.default_threshold}/h"
+        
+        loading_msg += f"   📌 数量: {count} | {filter_info} | 排序: {order_names.get(self.order, self.order)}"
         yield event.plain_result(loading_msg)
 
         # 创建爬虫实例
         spider = BilibiliSpider(
             sessdata=self.sessdata,
-            tiered_filter=self.tiered_filter,
-            tier_5h=self.tier_5h,
-            tier_24h=self.tier_24h,
-            tier_old=self.tier_old,
+            tiered_filter=use_tiered,
+            tier_hours=self.tier_hours,
+            tier_thresholds=self.tier_thresholds,
+            default_threshold=self.default_threshold,
         )
 
         # 根据模式搜索
@@ -432,7 +462,10 @@ class BilibiliPlugin(Star):
                 if provider_id:
                     # 构建搜索条件描述
                     order_cn = order_names.get(self.order, self.order)
-                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选(5h内>{self.tier_5h}/h, 5-24h>{self.tier_24h}/h, 24h+>{self.tier_old}/h)，排序按{order_cn}，筛选{count}个视频的结果，请你"
+                    # 构建分层筛选描述
+                    tier_desc = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+                    tier_desc += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
                     summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
                     llm_resp = await self.context.llm_generate(
                         chat_provider_id=provider_id,
@@ -463,20 +496,25 @@ class BilibiliPlugin(Star):
         count = self.target_count
         order = self.order
 
+        # 构建分层筛选信息
+        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        
         # 发送正在搜索的提示
         order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
         loading_msg = f"🔥 正在搜索热门「{keyword}」...\n"
-        loading_msg += f"   📌 数量: {count} | 筛选: 5h内>{self.tier_5h}/h, 5-24h>{self.tier_24h}/h, 24h+>{self.tier_old}/h | 排序: {order_names.get(order, order)}"
+        loading_msg += f"   📌 数量: {count} | 筛选: {tier_str} | 排序: {order_names.get(order, order)}"
         if enable_summary:
             loading_msg += " | 🤖 AI总结: 启用"
         yield event.plain_result(loading_msg)
 
+        # b站热门使用默认配置，始终使用分层筛选
         spider = BilibiliSpider(
             sessdata=self.sessdata,
             tiered_filter=self.tiered_filter,
-            tier_5h=self.tier_5h,
-            tier_24h=self.tier_24h,
-            tier_old=self.tier_old,
+            tier_hours=self.tier_hours,
+            tier_thresholds=self.tier_thresholds,
+            default_threshold=self.default_threshold,
         )
 
         if self.use_collect_mode:
@@ -517,7 +555,10 @@ class BilibiliPlugin(Star):
                 if provider_id:
                     # 构建搜索条件描述
                     order_cn = order_names.get(order, order)
-                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选(5h内>{self.tier_5h}/h, 5-24h>{self.tier_24h}/h, 24h+>{self.tier_old}/h)，排序按{order_cn}，筛选{count}个视频的结果，请你"
+                    # 构建分层筛选描述
+                    tier_desc = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+                    tier_desc += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
                     summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
                     llm_resp = await self.context.llm_generate(
                         chat_provider_id=provider_id,
@@ -539,18 +580,23 @@ class BilibiliPlugin(Star):
             "click": "按播放量",
             "stow": "按收藏数"
         }
+        # 构建分层筛选描述
+        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        
         lines = [
             "⚙️ B站爬虫插件当前配置:",
             "",
             f"📌 默认关键词: {self.keyword}",
             f"📌 排序方式: {order_names.get(self.order, self.order)}",
             f"📌 目标数量: {self.target_count}",
-            f"📌 分层筛选: 5h内>2000/h, 5-24h>1500/h, 24h+>1000/h",
+            f"📌 分层筛选: {tier_str}",
+            f"📌 统一阈值: >{self.default_threshold}/h (用户指定数量时)",
             f"📌 搜索模式: {'集满模式' if self.use_collect_mode else '普通模式'}",
             f"📌 SESSDATA: {'已配置' if self.sessdata else '未配置'}",
             "",
             "💡 使用说明:",
-            "  /b站搜索 <关键词> [数量] - 搜索视频",
+            "  /b站搜索 <关键词> [数量] - 搜索视频（默认数量用分层筛选，指定数量用统一阈值）",
             "  /b站搜索 <关键词> 数量 总结 - 搜索并AI总结",
             "  /b站热门 - 使用默认配置搜索",
             "  /b站热门 总结 - 热门搜索并AI总结",
@@ -570,12 +616,15 @@ class BilibiliPlugin(Star):
         # 限制数量
         count = min(count, 25)
         
+        # LLM调用时，使用默认数量时用分层筛选，指定数量时用统一阈值
+        use_tiered = self.tiered_filter and count == self.target_count
+        
         spider = BilibiliSpider(
             sessdata=self.sessdata,
-            tiered_filter=self.tiered_filter,
-            tier_5h=self.tier_5h,
-            tier_24h=self.tier_24h,
-            tier_old=self.tier_old,
+            tiered_filter=use_tiered,
+            tier_hours=self.tier_hours,
+            tier_thresholds=self.tier_thresholds,
+            default_threshold=self.default_threshold,
         )
         
         # 搜索视频
@@ -619,7 +668,10 @@ class BilibiliPlugin(Star):
                 provider_id = await self.context.get_current_chat_provider_id(umo=umo)
                 if provider_id:
                     order_cn = order_names.get(self.order, self.order)
-                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选(5h内>{self.tier_5h}/h, 5-24h>{self.tier_24h}/h, 24h+>{self.tier_old}/h)，排序按{order_cn}，筛选{count}个视频的结果，请你"
+                    # 构建分层筛选描述
+                    tier_desc = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
+                    tier_desc += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
                     summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
                     llm_resp = await self.context.llm_generate(
                         chat_provider_id=provider_id,

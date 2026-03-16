@@ -39,22 +39,25 @@
     "description": "启用分层筛选（根据视频年龄动态调整阈值）",
     "type": "bool",
     "default": true,
-    "hint": "开启后：5小时内>2000/h, 5-24小时>1500/h, 24小时以上>1000/h"
+    "hint": "仅默认配置时生效；用户指定数量时使用统一阈值"
   },
-  "tier_5h_threshold": {
-    "description": "5小时以内视频的阈值（每小时播放量）",
-    "type": "float",
-    "default": 2000.0
+  "tier_hours": {
+    "description": "分层筛选的时间节点（小时），按从小到大排列，最后一项之后为最后档位",
+    "type": "string",
+    "default": "5,24",
+    "hint": "格式：小时数之间用英文逗号分隔，如 \"5,24\" 表示：0-5小时，5-24小时，24小时以上"
   },
-  "tier_24h_threshold": {
-    "description": "5-24小时视频的阈值（每小时播放量）",
-    "type": "float",
-    "default": 1500.0
+  "tier_thresholds": {
+    "description": "分层筛选阈值（每小时播放量），按时间顺序对应",
+    "type": "string",
+    "default": "2000,1500,1000",
+    "hint": "格式：阈值之间用英文逗号分隔，数量需比tier_hours多1个"
   },
-  "tier_old_threshold": {
-    "description": "24小时以上视频的阈值（每小时播放量）",
+  "default_threshold": {
+    "description": "用户指定数量时的统一筛选阈值",
     "type": "float",
-    "default": 1000.0
+    "default": 1500.0,
+    "hint": "当用户指定数量时使用此阈值，不再分段"
   },
   "export_json": {
     "description": "是否导出JSON文件",
