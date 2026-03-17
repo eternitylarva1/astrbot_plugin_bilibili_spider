@@ -251,10 +251,11 @@ class BilibiliSpider:
         
         # 如果使用分层筛选
         if use_tiered and self.tiered_filter:
-            threshold = 1000
-        else:
             hours = video.get("hours_since_publish", 0)
             threshold = self.get_tiered_threshold(hours)
+        else:
+            # 使用统一阈值
+            threshold = self.default_threshold
         
         return play_per_hour > threshold
 
