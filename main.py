@@ -134,7 +134,55 @@ class BilibiliCommentSender:
         # 上次评论时间
         self.last_comment_time = 0
         
-        logger.info(f"B站评论发送器已初始化 | 每日限额: {max_daily} | 间隔: {comment_interval}s")
+        # 已评论视频记录文件
+        self.comment_record_file = "commented_videos.json"
+        self.commented_videos = self._load_comment_record()
+        
+        logger.info(f"B站评论发送器已初始化 | 每日限额: {max_daily} | 间隔: {comment_interval}s | 已记录视频: {len(self.commented_videos)}")
+    
+    def _get_data_dir(self) -> str:
+        """获取数据目录"""
+        import os
+        # 使用插件目录
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.join(plugin_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        return data_dir
+    
+    def _load_comment_record(self) -> dict:
+        """加载评论记录"""
+        import os
+        import json
+        record_file = os.path.join(self._get_data_dir(), self.comment_record_file)
+        if os.path.exists(record_file):
+            try:
+                with open(record_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+    
+    def _save_comment_record(self):
+        """保存评论记录"""
+        import os
+        import json
+        record_file = os.path.join(self._get_data_dir(), self.comment_record_file)
+        with open(record_file, "w", encoding="utf-8") as f:
+            json.dump(self.commented_videos, f, ensure_ascii=False, indent=2)
+    
+    def is_commented(self, bvid: str) -> bool:
+        """检查视频是否已评论"""
+        return bvid in self.commented_videos
+    
+    def record_comment(self, bvid: str, content: str, title: str = ""):
+        """记录评论"""
+        self.commented_videos[bvid] = {
+            "content": content,
+            "title": title,
+            "timestamp": time.time()
+        }
+        self._save_comment_record()
+        logger.info(f"已记录评论: {bvid} - {content}")
     
     def _get_day_start(self) -> int:
         """获取今天开始的时间戳"""
@@ -180,6 +228,10 @@ class BilibiliCommentSender:
         """
         from bilibili_api import video, comment
         from bilibili_api.comment import ResourceType
+        
+        # 检查是否已评论（本地记录）
+        if self.is_commented(bvid):
+            return False, f"视频 {bvid} 已评论过，跳过"
         
         # 安全检查
         if not await self.circuit_breaker.check():
@@ -231,6 +283,8 @@ class BilibiliCommentSender:
                     
                     if rpid:
                         self.circuit_breaker.record_success()
+                        # 记录评论
+                        self.record_comment(bvid, content, title)
                         logger.info(f"✅ 评论发送成功! rpid: {rpid}")
                         return True, f"评论发送成功！\n视频: {title}\n评论: {content}"
                     return False, "评论发送成功但未返回ID"
@@ -912,6 +966,8 @@ class BilibiliPlugin(Star):
             f"📌 搜索模式: {'集满模式' if self.use_collect_mode else '普通模式'}",
             f"📌 SESSDATA: {'已配置' if self.sessdata else '未配置'}",
             f"📌 bili_jct: {'已配置' if self.bili_jct else '未配置'}",
+            f"📌 默认评论: {self.default_comment}",
+            f"📌 已评论视频数: {len(self.comment_sender.commented_videos) if self.comment_sender else 0}",
             "",
             "💡 使用说明:",
             "  /b站搜索 <关键词> [数量] - 搜索视频（默认数量用分层筛选，指定数量用统一阈值）",
@@ -920,6 +976,7 @@ class BilibiliPlugin(Star):
             "  /b站热门 - 使用默认配置搜索",
             "  /b站热门 总结 - 热门搜索并AI总结",
             "  /b站评论 <BV号> <内容> - 直接发送评论",
+            "  /b站评论记录 - 查看已评论的视频列表",
             "  /b站配置 - 查看当前配置",
         ]
         yield event.plain_result("\n".join(lines))
@@ -968,14 +1025,42 @@ class BilibiliPlugin(Star):
         status = self.comment_sender.get_status()
         yield event.plain_result(f"📊 状态: {status}")
 
+    @filter.command("b站评论记录")
+    async def bilibili_comment_record(self, event: AstrMessageEvent):
+        """查看已评论的视频列表"""
+        if not self.comment_sender:
+            yield event.plain_result("❌ 评论功能未启用，请配置bili_jct")
+            return
+        
+        commented = self.comment_sender.commented_videos
+        if not commented:
+            yield event.plain_result("📝 暂无评论记录")
+            return
+        
+        lines = ["📝 已评论视频列表：", ""]
+        for bvid, info in commented.items():
+            title = info.get("title", "")
+            content = info.get("content", "")
+            timestamp = info.get("timestamp", 0)
+            from datetime import datetime
+            time_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+            lines.append(f"• {bvid}")
+            lines.append(f"  标题: {title}")
+            lines.append(f"  评论: {content}")
+            lines.append(f"  时间: {time_str}")
+            lines.append("")
+        
+        yield event.plain_result("\n".join(lines))
+
     @filter.llm_tool(name="bilibili_search")
-    async def bilibili_search_tool(self, event: AstrMessageEvent, keyword: str, count: int = 10, summary: bool = False) -> MessageEventResult:
+    async def bilibili_search_tool(self, event: AstrMessageEvent, keyword: str, count: int = 10, summary: bool = False, comment: bool = False) -> MessageEventResult:
         """搜索B站视频，根据播放量和发布时间筛选高质量视频。
         
         Args:
             keyword(string): 搜索关键词，例如"我的世界"、"杀戮尖塔2"等
             count(number): 返回的视频数量，默认10个，最多25个
             summary(boolean): 是否启用AI总结，默认False
+            comment(boolean): 是否评论第一个视频，默认False
         """
         # 限制数量
         count = min(count, 25)
@@ -1048,6 +1133,22 @@ class BilibiliPlugin(Star):
         
         # 发送合并转发消息
         yield event.chain_result(nodes)
+        
+        # 评论（如果启用）
+        if comment and videos and self.comment_sender:
+            first_video = videos[0]
+            bvid = first_video.get("bvid")
+            title = first_video.get("title", "")
+            comment_content = self.default_comment
+            
+            yield event.plain_result(f"📝 正在发送评论到第一个视频: {title}")
+            
+            success, msg = await self.comment_sender.send_comment(bvid, comment_content)
+            
+            if success:
+                yield event.plain_result(f"✅ {msg}")
+            else:
+                yield event.plain_result(f"❌ 评论失败: {msg}")
 
     async def terminate(self):
         """插件卸载时调用"""
