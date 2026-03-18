@@ -82,12 +82,6 @@
     "default": "请简要总结这些视频的特点和内容，推荐一些高质量的视频，并分析当前的热门趋势",
     "hint": "这是给AI的指令，可以自定义总结的风格和内容"
   },
-  "comment_enabled": {
-    "description": "启用评论功能",
-    "type": "bool",
-    "default": false,
-    "hint": "需要在配置中填写bili_jct才能使用"
-  },
   "max_daily_comments": {
     "description": "每日最大评论数",
     "type": "int",
