@@ -227,7 +227,7 @@ class BilibiliCommentSender:
             (success: bool, message: str)
         """
         from bilibili_api import video, comment
-        from bilibili_api.comment import ResourceType
+        from bilibili_api.comment import CommentResourceType
         
         # 检查是否已评论（本地记录）
         if self.is_commented(bvid):
@@ -266,7 +266,7 @@ class BilibiliCommentSender:
             result = await comment.send_comment(
                 text=content,
                 oid=aid,
-                type_=ResourceType.VIDEO,
+                type_=CommentResourceType.VIDEO,
                 credential=self.credential
             )
             
