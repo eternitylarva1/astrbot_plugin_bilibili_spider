@@ -588,9 +588,8 @@ class BilibiliPlugin(Star):
         self.analysis_prompt = config.get("analysis_prompt", "请简要总结这些视频的特点和内容，推荐一些高质量的视频，并分析当前的热门趋势")
         self.enable_analysis = config.get("enable_analysis", True)
 
-        # 评论功能配置
+        # 评论功能配置（通过是否配置bili_jct来判断是否启用）
         self.bili_jct = config.get("bili_jct", "")
-        self.comment_enabled = config.get("comment_enabled", False)
         self.max_daily_comments = config.get("max_daily_comments", 100)
         self.comment_interval = config.get("comment_interval", 2.0)
         self.default_comment = config.get("default_comment", "这期神了")
