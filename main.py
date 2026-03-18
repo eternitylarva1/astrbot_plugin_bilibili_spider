@@ -109,12 +109,32 @@ class BilibiliCommentSender:
             comment_interval: 评论间隔（秒）
         """
         from bilibili_api import Credential
+        from urllib.parse import unquote
+        
+        # 解析 SESSDATA（可能包含 URL 编码）
+        parsed_sessdata = sessdata
+        if sessdata:
+            try:
+                parsed_sessdata = unquote(sessdata)
+            except Exception:
+                pass
+        
+        # 解析 bili_jct
+        parsed_bili_jct = bili_jct
+        if bili_jct:
+            try:
+                parsed_bili_jct = unquote(bili_jct)
+            except Exception:
+                pass
         
         self.credential = Credential(
-            sessdata=sessdata or "",
-            bili_jct=bili_jct or "",
+            sessdata=parsed_sessdata or "",
+            bili_jct=parsed_bili_jct or "",
             buvid3=buvid3
         )
+        
+        # 记录配置状态（不记录实际值）
+        logger.info(f"B站评论发送器初始化 | SESSDATA: {'已配置' if sessdata else '未配置'} | bili_jct: {'已配置' if bili_jct else '未配置'}")
         
         # 安全机制
         self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
@@ -291,9 +311,9 @@ class BilibiliCommentSender:
                 
                 # 错误码处理
                 error_msgs = {
-                    -101: "账号未登录，请检查SESSDATA",
+                    -101: "账号未登录 (SESSDATA无效或已过期，请重新获取)",
                     -400: "请求错误",
-                    -403: "权限不足",
+                    -403: "权限不足，可能是Cookie已过期",
                     12002: "评论已被删除",
                     12051: "评论内容重复",
                     12053: "评论审核中",
@@ -301,13 +321,13 @@ class BilibiliCommentSender:
                 }
                 
                 msg = error_msgs.get(code, result.get("message", "未知错误"))
-                logger.error(f"评论发送失败 [{code}]: {msg}")
+                logger.error(f"评论发送失败 [{code}]: {msg} | 原始响应: {result}")
                 
                 # 严重错误熔断
                 if code in [-101, -400]:
                     self.circuit_breaker.record_failure()
                 
-                return False, msg
+                return False, f"接口返回错误代码：{code}，信息：{msg}"
             
             return False, "未知响应格式"
             
