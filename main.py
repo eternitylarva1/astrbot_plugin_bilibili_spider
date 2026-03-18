@@ -134,7 +134,9 @@ class BilibiliCommentSender:
         )
         
         # 记录配置状态（不记录实际值）
-        logger.info(f"B站评论发送器初始化 | SESSDATA: {'已配置' if sessdata else '未配置'} | bili_jct: {'已配置' if bili_jct else '未配置'}")
+        has_sessdata = bool(sessdata and len(sessdata) > 10)
+        has_bili_jct = bool(bili_jct and len(bili_jct) > 5)
+        logger.info(f"B站评论发送器初始化 | SESSDATA: {'已配置' if has_sessdata else '未配置'} (长度:{len(sessdata) if sessdata else 0}) | bili_jct: {'已配置' if has_bili_jct else '未配置'} (长度:{len(bili_jct) if bili_jct else 0})")
         
         # 安全机制
         self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
