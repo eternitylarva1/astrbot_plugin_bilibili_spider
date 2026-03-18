@@ -101,6 +101,6 @@
   "default_comment": {
     "description": "默认评论内容（当未指定评论内容时使用）",
     "type": "string",
-    "default": "路过，支持一下~"
+    "default": "这期神了"
   }
 }

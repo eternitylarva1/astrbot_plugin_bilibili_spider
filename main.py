@@ -593,7 +593,7 @@ class BilibiliPlugin(Star):
         self.comment_enabled = config.get("comment_enabled", False)
         self.max_daily_comments = config.get("max_daily_comments", 100)
         self.comment_interval = config.get("comment_interval", 2.0)
-        self.default_comment = config.get("default_comment", "路过，支持一下~")
+        self.default_comment = config.get("default_comment", "这期神了")
 
         # 评论发送器
         self.comment_sender = None
