@@ -593,6 +593,7 @@ class BilibiliPlugin(Star):
         self.comment_enabled = config.get("comment_enabled", False)
         self.max_daily_comments = config.get("max_daily_comments", 100)
         self.comment_interval = config.get("comment_interval", 2.0)
+        self.default_comment = config.get("default_comment", "路过，支持一下~")
 
         # 评论发送器
         self.comment_sender = None
@@ -687,9 +688,10 @@ class BilibiliPlugin(Star):
             if not self.comment_sender:
                 yield event.plain_result("❌ 评论功能未启用，请配置bili_jct")
                 return
+            # 如果没有提供评论内容，使用默认评论
             if not comment_content:
-                yield event.plain_result("❌ 请提供评论内容，如：/b站搜索 杀戮尖塔2 评论 很棒的视频")
-                return
+                comment_content = self.default_comment
+                yield event.plain_result(f"💬 使用默认评论: {comment_content}")
 
         # 发送正在搜索的提示
         order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
