@@ -4,19 +4,274 @@
 B站视频搜索爬虫插件 for AstrBot
 按关键词搜索视频，按时间排序，获取播放量和发布时间
 支持配置化：SESSDATA、搜索关键词、数量、筛选模式等
+支持B站评论功能
 """
 
 import requests
 import json
 import time
+import asyncio
 from datetime import datetime
 from urllib.parse import quote, unquote
 from typing import Optional, List, Dict, Any
+from collections import deque
+from dataclasses import dataclass
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
 import astrbot.api.message_components as Comp
+
+
+# ============ 安全机制模块 ============
+
+class RateLimiter:
+    """限流器 - 防止请求过快"""
+    
+    def __init__(self, max_requests: int = 10, time_window: int = 60):
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = deque()
+    
+    async def acquire(self):
+        now = time.time()
+        while self.requests and self.requests[0] < now - self.time_window:
+            self.requests.popleft()
+        
+        if len(self.requests) >= self.max_requests:
+            sleep_time = self.requests[0] + self.time_window - now
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
+                while self.requests and self.requests[0] < time.time() - self.time_window:
+                    self.requests.popleft()
+        
+        self.requests.append(time.time())
+    
+    def reset(self):
+        self.requests.clear()
+
+
+class CircuitBreaker:
+    """熔断器 - 连续失败后暂停"""
+    
+    def __init__(self, failure_threshold: int = 5, recovery_time: int = 300):
+        self.failure_threshold = failure_threshold
+        self.recovery_time = recovery_time
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.state = "closed"
+    
+    def record_success(self):
+        self.failure_count = 0
+        self.state = "closed"
+    
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.state = "open"
+            logger.warning(f"🔌 熔断器打开，连续{self.failure_count}次失败")
+    
+    async def check(self):
+        if self.state == "open":
+            if time.time() - self.last_failure_time > self.recovery_time:
+                self.state = "half_open"
+                logger.info("🔌 熔断器进入半开状态")
+                return True
+            return False
+        return True
+    
+    def reset(self):
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.state = "closed"
+
+
+class BilibiliCommentSender:
+    """B站评论发送器（带安全机制）"""
+    
+    def __init__(
+        self,
+        bili_jct: str = "",
+        sessdata: str = "",
+        buvid3: str = "F",
+        max_daily: int = 100,
+        comment_interval: float = 2.0,
+    ):
+        """
+        初始化评论发送器
+        
+        Args:
+            bili_jct: B站 bili_jct Cookie
+            sessdata: B站 SESSDATA Cookie
+            buvid3: B站 buvid3 Cookie
+            max_daily: 每日最大评论数
+            comment_interval: 评论间隔（秒）
+        """
+        from bilibili_api import Credential
+        
+        self.credential = Credential(
+            sessdata=sessdata or "",
+            bili_jct=bili_jct or "",
+            buvid3=buvid3
+        )
+        
+        # 安全机制
+        self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_time=300
+        )
+        
+        # 配置
+        self.max_daily = max_daily
+        self.comment_interval = comment_interval
+        
+        # 记录今日评论数
+        self.daily_comment_count = 0
+        self.daily_reset_time = self._get_day_start()
+        
+        # 上次评论时间
+        self.last_comment_time = 0
+        
+        logger.info(f"B站评论发送器已初始化 | 每日限额: {max_daily} | 间隔: {comment_interval}s")
+    
+    def _get_day_start(self) -> int:
+        """获取今天开始的时间戳"""
+        now = time.localtime()
+        return time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, 0))
+    
+    def _reset_daily_count(self):
+        """重置每日计数"""
+        now = time.time()
+        if now >= self.daily_reset_time + 86400:  # 新的一天
+            self.daily_comment_count = 0
+            self.daily_reset_time = self._get_day_start()
+    
+    async def _check_and_increment_daily(self) -> bool:
+        """检查并增加每日计数"""
+        self._reset_daily_count()
+        
+        if self.daily_comment_count >= self.max_daily:
+            logger.warning(f"已达每日最大评论数: {self.max_daily}")
+            return False
+        
+        self.daily_comment_count += 1
+        return True
+    
+    async def _wait_interval(self):
+        """等待评论间隔"""
+        now = time.time()
+        elapsed = now - self.last_comment_time
+        if elapsed < self.comment_interval:
+            await asyncio.sleep(self.comment_interval - elapsed)
+        self.last_comment_time = time.time()
+    
+    async def send_comment(self, bvid: str, content: str):
+        """
+        发送根评论
+        
+        Args:
+            bvid: 视频BV号
+            content: 评论内容
+            
+        Returns:
+            (success: bool, message: str)
+        """
+        from bilibili_api import video, comment
+        from bilibili_api.comment import ResourceType
+        
+        # 安全检查
+        if not await self.circuit_breaker.check():
+            return False, "熔断器已打开，请稍后再试"
+        
+        if not await self._check_and_increment_daily():
+            return False, "已达每日最大评论数"
+        
+        # 等待间隔
+        await self._wait_interval()
+        
+        # 获取视频信息
+        try:
+            await self.rate_limiter.acquire()
+            
+            v = video.Video(bvid=bvid, credential=self.credential)
+            video_info = await v.get_info()
+            aid = video_info.get("aid")
+            title = video_info.get("title", "未知标题")
+            
+            logger.info(f"📺 视频: {title} (av{aid})")
+            
+        except Exception as e:
+            logger.error(f"获取视频信息失败: {e}")
+            self.circuit_breaker.record_failure()
+            return False, f"获取视频信息失败: {e}"
+        
+        # 发送评论
+        try:
+            await self.rate_limiter.acquire()
+            
+            result = await comment.send_comment(
+                text=content,
+                oid=aid,
+                type_=ResourceType.VIDEO,
+                credential=self.credential
+            )
+            
+            if result is None:
+                self.circuit_breaker.record_failure()
+                return False, "网络错误，请稍后重试"
+            
+            if isinstance(result, dict):
+                code = result.get("code", -1)
+                
+                if code == 0:
+                    data = result.get("data", {})
+                    rpid = data.get("rpid") if isinstance(data, dict) else None
+                    
+                    if rpid:
+                        self.circuit_breaker.record_success()
+                        logger.info(f"✅ 评论发送成功! rpid: {rpid}")
+                        return True, f"评论发送成功！\n视频: {title}\n评论: {content}"
+                    return False, "评论发送成功但未返回ID"
+                
+                # 错误码处理
+                error_msgs = {
+                    -101: "账号未登录，请检查SESSDATA",
+                    -400: "请求错误",
+                    -403: "权限不足",
+                    12002: "评论已被删除",
+                    12051: "评论内容重复",
+                    12053: "评论审核中",
+                    12061: "评论已关闭",
+                }
+                
+                msg = error_msgs.get(code, result.get("message", "未知错误"))
+                logger.error(f"评论发送失败 [{code}]: {msg}")
+                
+                # 严重错误熔断
+                if code in [-101, -400]:
+                    self.circuit_breaker.record_failure()
+                
+                return False, msg
+            
+            return False, "未知响应格式"
+            
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"评论发送异常: {error_msg}")
+            
+            if "-401" in error_msg:
+                self.circuit_breaker.record_failure()
+                return False, "登录已过期，请重新配置SESSDATA"
+            
+            self.circuit_breaker.record_failure()
+            return False, f"发送失败: {error_msg}"
+    
+    def get_status(self) -> str:
+        """获取状态信息"""
+        self._reset_daily_count()
+        return f"今日已评论: {self.daily_comment_count}/{self.max_daily} | 熔断器: {self.circuit_breaker.state}"
 
 
 class BilibiliSpider:
@@ -333,6 +588,22 @@ class BilibiliPlugin(Star):
         self.analysis_prompt = config.get("analysis_prompt", "请简要总结这些视频的特点和内容，推荐一些高质量的视频，并分析当前的热门趋势")
         self.enable_analysis = config.get("enable_analysis", True)
 
+        # 评论功能配置
+        self.bili_jct = config.get("bili_jct", "")
+        self.comment_enabled = config.get("comment_enabled", False)
+        self.max_daily_comments = config.get("max_daily_comments", 100)
+        self.comment_interval = config.get("comment_interval", 2.0)
+
+        # 评论发送器
+        self.comment_sender = None
+        if self.bili_jct:
+            self.comment_sender = BilibiliCommentSender(
+                bili_jct=self.bili_jct,
+                sessdata=self.sessdata,
+                max_daily=self.max_daily_comments,
+                comment_interval=self.comment_interval
+            )
+
         # 构建日志信息
         tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
         tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
@@ -345,9 +616,10 @@ class BilibiliPlugin(Star):
     async def bilibili_search(self, event: AstrMessageEvent):
         """
         B站视频搜索
-        用法: /b站搜索 <关键词> [数量] [筛选阈值] [总结]
+        用法: /b站搜索 <关键词> [数量] [总结] [评论 [评论内容]]
         示例: /b站搜索 杀戮尖塔2 10 1000
         示例: /b站搜索 杀戮尖塔2 总结
+        示例: /b站搜索 杀戮尖塔2 评论 很棒的视频
         """
         message = event.message_str.strip()
         parts = message.split()
@@ -361,16 +633,33 @@ class BilibiliPlugin(Star):
         count = self.target_count
         use_collect = self.use_collect_mode
         enable_summary = False  # 是否启用AI总结
+        enable_comment = False  # 是否启用评论
+        comment_content = ""    # 评论内容
 
-        # 检查是否包含总结参数
-        param_keywords = [p for p in parts if p not in ["总结", "分析", "summary", "分析"]]
+        # 检查是否包含评论参数
+        comment_idx = -1
+        for i, p in enumerate(parts):
+            if p == "评论":
+                comment_idx = i
+                break
+        
+        if comment_idx >= 0:
+            # 提取评论内容（评论后面的所有内容）
+            enable_comment = True
+            comment_parts = parts[comment_idx + 1:]
+            comment_content = " ".join(comment_parts)
+            # 去除评论相关内容，获取其他参数
+            parts = parts[:comment_idx]
+        
+        # 过滤掉总结关键词
+        filter_keywords = ["总结", "分析", "summary"]
         
         if len(parts) >= 1:
             # 检查是否有总结参数
-            if any(p in parts for p in ["总结", "分析", "summary"]):
+            if any(p in parts for p in filter_keywords):
                 enable_summary = True
                 # 去除总结关键词，获取实际关键词
-                actual_parts = [p for p in parts if p not in ["总结", "分析", "summary"]]
+                actual_parts = [p for p in parts if p not in filter_keywords]
                 if actual_parts:
                     try:
                         # 尝试解析数量
@@ -391,7 +680,16 @@ class BilibiliPlugin(Star):
                     except ValueError:
                         pass
 
-        logger.info(f"开始搜索 | 关键词: {keyword} | 数量: {count}")
+        logger.info(f"开始搜索 | 关键词: {keyword} | 数量: {count} | 评论: {enable_comment}")
+
+        # 检查评论功能
+        if enable_comment:
+            if not self.comment_sender:
+                yield event.plain_result("❌ 评论功能未启用，请配置bili_jct")
+                return
+            if not comment_content:
+                yield event.plain_result("❌ 请提供评论内容，如：/b站搜索 杀戮尖塔2 评论 很棒的视频")
+                return
 
         # 发送正在搜索的提示
         order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
@@ -411,6 +709,8 @@ class BilibiliPlugin(Star):
             filter_info = f"统一阈值: >{self.default_threshold}/h"
         
         loading_msg += f"   📌 数量: {count} | {filter_info} | 排序: {order_names.get(self.order, self.order)}"
+        if enable_comment:
+            loading_msg += f"\n   💬 将评论: {comment_content}"
         yield event.plain_result(loading_msg)
 
         # 创建爬虫实例
@@ -479,6 +779,21 @@ class BilibiliPlugin(Star):
 
         # 发送合并转发消息
         yield event.chain_result(nodes)
+
+        # 评论（如果启用）- 在搜索结果发送后评论第一个视频
+        if enable_comment and videos and self.comment_sender:
+            first_video = videos[0]
+            bvid = first_video.get("bvid")
+            title = first_video.get("title", "")
+            
+            yield event.plain_result(f"📝 正在发送评论到第一个视频: {title}")
+            
+            success, msg = await self.comment_sender.send_comment(bvid, comment_content)
+            
+            if success:
+                yield event.plain_result(f"✅ {msg}")
+            else:
+                yield event.plain_result(f"❌ 评论失败: {msg}")
 
     @filter.command("b站热门")
     async def bilibili_hot(self, event: AstrMessageEvent):
@@ -595,15 +910,62 @@ class BilibiliPlugin(Star):
             f"📌 统一阈值: >{self.default_threshold}/h (用户指定数量时)",
             f"📌 搜索模式: {'集满模式' if self.use_collect_mode else '普通模式'}",
             f"📌 SESSDATA: {'已配置' if self.sessdata else '未配置'}",
+            f"📌 bili_jct: {'已配置' if self.bili_jct else '未配置'}",
             "",
             "💡 使用说明:",
             "  /b站搜索 <关键词> [数量] - 搜索视频（默认数量用分层筛选，指定数量用统一阈值）",
             "  /b站搜索 <关键词> 数量 总结 - 搜索并AI总结",
+            "  /b站搜索 <关键词> 评论 <内容> - 搜索视频并评论第一个结果",
             "  /b站热门 - 使用默认配置搜索",
             "  /b站热门 总结 - 热门搜索并AI总结",
+            "  /b站评论 <BV号> <内容> - 直接发送评论",
             "  /b站配置 - 查看当前配置",
         ]
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("b站评论")
+    async def bilibili_comment(self, event: AstrMessageEvent):
+        """
+        B站评论发送
+        用法: /b站评论 <BV号> <评论内容>
+        示例: /b站评论 BV1xx411c7mD 很棒的视频
+        """
+        if not self.comment_sender:
+            yield event.plain_result("❌ 评论功能未启用，请配置bili_jct")
+            return
+        
+        message = event.message_str.strip()
+        parts = message.split()
+
+        # 跳过命令名
+        if parts and parts[0] in ["b站评论", "/b站评论"]:
+            parts = parts[1:]
+
+        if len(parts) < 2:
+            yield event.plain_result("❌ 用法: /b站评论 <BV号> <评论内容>\n示例: /b站评论 BV1xx411c7mD 很棒的视频")
+            return
+
+        bvid = parts[0]
+        content = " ".join(parts[1:])
+
+        # 验证BV号格式
+        if not bvid.startswith("BV"):
+            yield event.plain_result("❌ BV号格式错误，应以BV开头")
+            return
+
+        # 发送评论
+        yield event.plain_result(f"📝 正在发送评论到视频 {bvid}...")
+        
+        success, msg = await self.comment_sender.send_comment(bvid, content)
+        
+        if success:
+            yield event.plain_result(f"✅ {msg}")
+        else:
+            yield event.plain_result(f"❌ 评论失败: {msg}")
+        
+        # 显示状态
+        status = self.comment_sender.get_status()
+        yield event.plain_result(f"📊 状态: {status}")
 
     @filter.llm_tool(name="bilibili_search")
     async def bilibili_search_tool(self, event: AstrMessageEvent, keyword: str, count: int = 10, summary: bool = False) -> MessageEventResult:
