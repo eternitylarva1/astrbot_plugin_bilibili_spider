@@ -633,6 +633,12 @@ class BilibiliSpider:
         return "\n".join(lines)
 
 
+def random_comment(comment_library: List[str]) -> str:
+    """从评论词库中随机选择一个评论"""
+    import random
+    return random.choice(comment_library)
+
+
 class BilibiliPlugin(Star):
     """B站视频搜索插件"""
 
@@ -671,7 +677,11 @@ class BilibiliPlugin(Star):
         self.max_daily_comments = config.get("max_daily_comments", 100)
         self.comment_interval = config.get("comment_interval", 2.0)
         self.default_comment = config.get("default_comment", "这期神了")
-
+        
+        # 评论词库
+        comment_library_str = config.get("comment_library", "这期神了|学到了|太牛了|666|支持一下|点赞了|不错|真香")
+        self.comment_library = [c.strip() for c in comment_library_str.split("|") if c.strip()]
+        
         # 评论发送器
         self.comment_sender = None
         if self.bili_jct:
@@ -765,10 +775,10 @@ class BilibiliPlugin(Star):
             if not self.comment_sender:
                 yield event.plain_result("❌ 评论功能未启用，请配置bili_jct")
                 return
-            # 如果没有提供评论内容，使用默认评论
+            # 如果没有提供评论内容，从词库随机选择
             if not comment_content:
-                comment_content = self.default_comment
-                yield event.plain_result(f"💬 使用默认评论: {comment_content}")
+                comment_content = random_comment(self.comment_library)
+                yield event.plain_result(f"💬 随机评论: {comment_content}")
 
         # 发送正在搜索的提示
         order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
@@ -1174,8 +1184,8 @@ class BilibiliPlugin(Star):
         
         # 评论（如果启用）- 评论所有视频
         if comment and videos and self.comment_sender:
-            comment_content = self.default_comment
-            yield event.plain_result(f"📝 开始评论，共 {len(videos)} 个视频")
+            comment_content = random_comment(self.comment_library)
+            yield event.plain_result(f"📝 开始评论，共 {len(videos)} 个视频 | 随机: {comment_content}")
             
             success_count = 0
             skip_count = 0
