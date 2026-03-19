@@ -633,64 +633,97 @@ class BilibiliSpider:
         return "\n".join(lines)
 
 
-def random_comment(comment_library: List[str]) -> str:
+def random_comment(comment_library: List[dict]) -> str:
     """从评论词库中随机选择一个评论"""
     import random
-    return random.choice(comment_library)
+    if not comment_library:
+        return "这期神了"
+    return random.choice(comment_library).get("comment", "这期神了")
+
+
+def parse_comment_library(library_str: str) -> List[dict]:
+    """
+    解析评论词库配置
+    格式：评论|适用条件（每行一个）
+    Returns: [{"comment": "这期神了", "condition": "用于整活、动画手书"}, ...]
+    """
+    result = []
+    for line in library_str.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # 用|分隔，取第一个和后面的部分
+        if "|" in line:
+            parts = line.split("|", 1)
+            comment = parts[0].strip()
+            condition = parts[1].strip() if len(parts) > 1 else ""
+            if comment:
+                result.append({"comment": comment, "condition": condition})
+        else:
+            # 没有条件，只有一个评论
+            result.append({"comment": line, "condition": ""})
+    return result
 
 
 async def llm_select_comment(
     plugin: 'BilibiliPlugin',
     event: AstrMessageEvent,
     videos: List[dict],
-    comment_library: List[str]
+    comment_library: List[dict]
 ) -> dict:
     """
     使用LLM为每个视频选择最合适的评论
     
+    Args:
+        comment_library: [{"comment": "...", "condition": "..."}, ...]
+    
     Returns:
         dict: {bvid: comment} 视频BV号到评论的映射
     """
-    import re
-    
-    if not videos:
+    if not videos or not comment_library:
         return {}
     
     # 构建视频标题列表
     video_titles = "\n".join([f"{i+1}. {v.get('bvid', '')}: {v.get('title', '')}" for i, v in enumerate(videos)])
     
-    # 构建评论选项
-    comment_options = "\n".join([f"{i+1}. {c}" for i, c in enumerate(comment_library)])
+    # 构建评论选项（带条件）
+    comment_options = []
+    for i, item in enumerate(comment_library):
+        comment = item.get("comment", "")
+        condition = item.get("condition", "")
+        if condition:
+            comment_options.append(f"{i+1}. {comment} → {condition}")
+        else:
+            comment_options.append(f"{i+1}. {comment}")
+    comment_options_str = "\n".join(comment_options)
     
-    # 默认提示词
-    default_prompt = """你是一个B站评论助手。根据视频标题，判断最合适的评论选项。
+    # 提取纯评论列表（用于匹配）
+    pure_comments = [item.get("comment", "") for item in comment_library]
+    
+    # 构建提示词
+    prompt = f"""你是一个B站评论助手。根据视频标题，选择最合适的一个评论。
 
 视频标题列表：
 {video_titles}
 
-评论选项：
-{comment_options}
+可选评论（带适用条件）：
+{comment_options_str}
 
 要求：
-1. 为每个视频选择一个最合适的评论
-2. 盗版搬运、资源分享类视频不要选择「支持up」
-3. 回复格式：每个视频一行，用|分隔，格式：BV号|选择的评论
-4. 例如：BV1xxx411c7mD|这期神了
-5. 如果无法判断视频内容类型，选一个安全的评论如「这期神了」或「学到了」"""
+1. 为每个视频选择一个最贴切的评论
+2. 根据评论的适用条件来判断
+3. 如果无法判断类型，选择通用好评类评论（如666、这期神了）
+4. 回复格式：每个视频一行，格式：BV号|选择的评论
+5. 例如：BV1xxx411c7mD|这期神了"""
 
-    prompt_template = plugin.comment_selection_prompt or default_prompt
-    prompt = prompt_template.format(
-        video_titles=video_titles,
-        comment_options=comment_options
-    )
-    
     try:
         umo = event.unified_msg_origin
         provider_id = await plugin.context.get_current_chat_provider_id(umo=umo)
         
         if not provider_id:
             logger.warning("无法获取provider_id，使用随机评论")
-            return {v.get("bvid"): random_comment(comment_library) for v in videos}
+            import random
+            return {v.get("bvid"): random.choice(pure_comments) for v in videos}
         
         llm_resp = await plugin.context.llm_generate(
             chat_provider_id=provider_id,
@@ -705,7 +738,8 @@ async def llm_select_comment(
         for v in videos:
             bvid = v.get("bvid")
             if bvid:
-                comment_map[bvid] = random_comment(comment_library)  # 默认随机
+                import random
+                comment_map[bvid] = random.choice(pure_comments)  # 默认随机
         
         # 解析结果，格式：BV号|评论
         for line in result_text.strip().split("\n"):
@@ -715,14 +749,24 @@ async def llm_select_comment(
                 if len(parts) == 2:
                     bvid = parts[0].strip()
                     comment = parts[1].strip()
-                    if bvid.startswith("BV") and comment in comment_library:
-                        comment_map[bvid] = comment
+                    # 匹配评论
+                    for item in comment_library:
+                        if item.get("comment") == comment:
+                            comment_map[bvid] = comment
+                            break
+                    else:
+                        # 模糊匹配
+                        for item in comment_library:
+                            if comment in item.get("comment", "") or item.get("comment", "") in comment:
+                                comment_map[bvid] = item.get("comment", "")
+                                break
         
         return comment_map
         
     except Exception as e:
         logger.error(f"LLM评论选择失败: {e}")
-        return {v.get("bvid"): random_comment(comment_library) for v in videos}
+        import random
+        return {v.get("bvid"): random.choice(pure_comments) for v in videos}
 
 
 class BilibiliPlugin(Star):
@@ -764,13 +808,12 @@ class BilibiliPlugin(Star):
         self.comment_interval = config.get("comment_interval", 2.0)
         self.default_comment = config.get("default_comment", "这期神了")
         
-        # 评论词库
-        comment_library_str = config.get("comment_library", "这期神了|学到了|太牛了|666|支持一下|点赞了|不错|真香")
-        self.comment_library = [c.strip() for c in comment_library_str.split("|") if c.strip()]
+        # 评论词库（解析带条件的格式）
+        comment_library_str = config.get("comment_library", "")
+        self.comment_library = parse_comment_library(comment_library_str) if comment_library_str else []
         
-        # LLM评论选择配置
+        # LLM评论选择
         self.use_llm_select_comment = config.get("use_llm_select_comment", True)
-        self.comment_selection_prompt = config.get("comment_selection_prompt", "")
         
         # 评论发送器
         self.comment_sender = None
@@ -982,13 +1025,18 @@ class BilibiliPlugin(Star):
             for i, video in enumerate(videos):
                 bvid = video.get("bvid")
                 title = video.get("title", "")
-                selected_comment = comment_map.get(bvid, random_comment(self.comment_library))
+                selected = comment_map.get(bvid, "")
+                # 确保是字符串
+                if isinstance(selected, dict):
+                    selected = selected.get("comment", "这期神了")
+                if not selected:
+                    selected = random_comment(self.comment_library)
                 
-                logger.info(f"评论进度: {i+1}/{len(videos)} - {title} | 评论: {selected_comment}")
+                logger.info(f"评论进度: {i+1}/{len(videos)} - {title} | 评论: {selected}")
                 yield event.plain_result(f"   [{i+1}/{len(videos)}] {title}")
-                yield event.plain_result(f"       💬 {selected_comment}")
+                yield event.plain_result(f"       💬 {selected}")
                 
-                success, msg = await self.comment_sender.send_comment(bvid, selected_comment)
+                success, msg = await self.comment_sender.send_comment(bvid, selected)
                 
                 if success:
                     success_count += 1
@@ -1204,20 +1252,32 @@ class BilibiliPlugin(Star):
                     comment_content = random_comment(self.comment_library)
                     yield event.plain_result(f"💬 AI不可用，使用随机评论: {comment_content}")
                 else:
-                    # 构建选项
-                    comment_options = "\n".join([f"{i+1}. {c}" for i, c in enumerate(self.comment_library)])
+                    # 构建选项（带条件）
+                    comment_options = []
+                    for i, item in enumerate(self.comment_library):
+                        comment = item.get("comment", "")
+                        condition = item.get("condition", "")
+                        if condition:
+                            comment_options.append(f"{i+1}. {comment} → {condition}")
+                        else:
+                            comment_options.append(f"{i+1}. {comment}")
+                    comment_options_str = "\n".join(comment_options)
                     
-                    prompt = f"""你是一个B站评论助手。根据以下视频标题，选择最合适的一个评论选项。
+                    # 提取纯评论列表
+                    pure_comments = [item.get("comment", "") for item in self.comment_library]
+                    
+                    prompt = f"""你是一个B站评论助手。根据以下视频标题，选择最合适的一个评论。
 
 视频标题: {title}
 
-评论选项:
-{comment_options}
+可选评论（带适用条件）：
+{comment_options_str}
 
-要求:
+要求：
 1. 选择最贴切视频内容的一个评论
-2. 直接输出选择的评论内容，不要其他解释
-3. 只输出评论，不要前缀如"我认为"等"""
+2. 根据评论的适用条件来判断
+3. 直接输出选择的评论内容，不要其他解释
+4. 只输出评论，不要前缀"""
 
                     llm_resp = await self.context.llm_generate(
                         chat_provider_id=provider_id,
@@ -1227,9 +1287,9 @@ class BilibiliPlugin(Star):
                     comment_content = llm_resp.completion_text.strip()
                     
                     # 检查是否返回了有效的评论
-                    if comment_content not in self.comment_library:
+                    if comment_content not in pure_comments:
                         # 尝试匹配
-                        for opt in self.comment_library:
+                        for opt in pure_comments:
                             if opt in comment_content or comment_content in opt:
                                 comment_content = opt
                                 break
@@ -1387,12 +1447,16 @@ class BilibiliPlugin(Star):
             for i, video in enumerate(videos):
                 bvid = video.get("bvid")
                 title = video.get("title", "")
-                selected_comment = comment_map.get(bvid, random_comment(self.comment_library))
+                selected = comment_map.get(bvid, "")
+                if isinstance(selected, dict):
+                    selected = selected.get("comment", "这期神了")
+                if not selected:
+                    selected = random_comment(self.comment_library)
                 
                 yield event.plain_result(f"   [{i+1}/{len(videos)}] {title}")
-                yield event.plain_result(f"       💬 {selected_comment}")
+                yield event.plain_result(f"       💬 {selected}")
                 
-                success, msg = await self.comment_sender.send_comment(bvid, selected_comment)
+                success, msg = await self.comment_sender.send_comment(bvid, selected)
                 
                 if success:
                     success_count += 1
