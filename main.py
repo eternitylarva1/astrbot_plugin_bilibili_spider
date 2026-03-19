@@ -1137,8 +1137,10 @@ class BilibiliPlugin(Star):
     async def bilibili_comment(self, event: AstrMessageEvent):
         """
         B站评论发送
-        用法: /b站评论 <BV号> <评论内容>
+        用法: /b站评论 <BV号> [评论内容]
+        - 不指定评论内容时，使用AI根据视频标题智能选择评论
         示例: /b站评论 BV1xx411c7mD 很棒的视频
+        示例: /b站评论 BV1xx411c7mD
         """
         if not self.comment_sender:
             yield event.plain_result("❌ 评论功能未启用，请配置bili_jct")
@@ -1151,22 +1153,101 @@ class BilibiliPlugin(Star):
         if parts and parts[0] in ["b站评论", "/b站评论"]:
             parts = parts[1:]
 
-        if len(parts) < 2:
-            yield event.plain_result("❌ 用法: /b站评论 <BV号> <评论内容>\n示例: /b站评论 BV1xx411c7mD 很棒的视频")
+        if len(parts) < 1:
+            yield event.plain_result("❌ 用法: /b站评论 <BV号> [评论内容]\n示例: /b站评论 BV1xx411c7mD\n示例: /b站评论 BV1xx411c7mD 很棒的视频")
             return
 
         bvid = parts[0]
-        content = " ".join(parts[1:])
+        user_content = " ".join(parts[1:]) if len(parts) > 1 else ""
 
         # 验证BV号格式
         if not bvid.startswith("BV"):
             yield event.plain_result("❌ BV号格式错误，应以BV开头")
             return
 
-        # 发送评论
-        yield event.plain_result(f"📝 正在发送评论到视频 {bvid}...")
+        # 如果用户提供了评论内容，直接使用
+        if user_content:
+            comment_content = user_content
+            yield event.plain_result(f"📝 正在发送评论到视频 {bvid}: {comment_content}")
+        else:
+            # 使用AI智能选择评论
+            yield event.plain_result(f"📝 正在获取视频信息并使用AI选择评论...")
+
+            # 获取视频信息
+            try:
+                import requests
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://www.bilibili.com",
+                }
+                resp = requests.get(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", headers=headers, timeout=10)
+                data = resp.json()
+                
+                if data.get("code") != 0:
+                    yield event.plain_result(f"❌ 获取视频信息失败: {data.get('message')}")
+                    return
+                
+                video_data = data.get("data", {})
+                title = video_data.get("title", "未知标题")
+                yield event.plain_result(f"📺 视频: {title}")
+                
+            except Exception as e:
+                yield event.plain_result(f"❌ 获取视频信息失败: {e}")
+                return
+
+            # 使用AI选择评论
+            try:
+                umo = event.unified_msg_origin
+                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+                
+                if not provider_id:
+                    comment_content = random_comment(self.comment_library)
+                    yield event.plain_result(f"💬 AI不可用，使用随机评论: {comment_content}")
+                else:
+                    # 构建选项
+                    comment_options = "\n".join([f"{i+1}. {c}" for i, c in enumerate(self.comment_library)])
+                    
+                    prompt = f"""你是一个B站评论助手。根据以下视频标题，选择最合适的一个评论选项。
+
+视频标题: {title}
+
+评论选项:
+{comment_options}
+
+要求:
+1. 选择最贴切视频内容的一个评论
+2. 直接输出选择的评论内容，不要其他解释
+3. 只输出评论，不要前缀如"我认为"等"""
+
+                    llm_resp = await self.context.llm_generate(
+                        chat_provider_id=provider_id,
+                        prompt=prompt,
+                    )
+                    
+                    comment_content = llm_resp.completion_text.strip()
+                    
+                    # 检查是否返回了有效的评论
+                    if comment_content not in self.comment_library:
+                        # 尝试匹配
+                        for opt in self.comment_library:
+                            if opt in comment_content or comment_content in opt:
+                                comment_content = opt
+                                break
+                        else:
+                            # 如果没匹配上，使用随机
+                            comment_content = random_comment(self.comment_library)
+                    
+                    yield event.plain_result(f"🤖 AI选择: {comment_content}")
+                    
+            except Exception as e:
+                logger.error(f"AI评论选择失败: {e}")
+                comment_content = random_comment(self.comment_library)
+                yield event.plain_result(f"💬 AI失败，使用随机评论: {comment_content}")
         
-        success, msg = await self.comment_sender.send_comment(bvid, content)
+        # 发送评论
+        yield event.plain_result(f"📤 发送评论...")
+        
+        success, msg = await self.comment_sender.send_comment(bvid, comment_content)
         
         if success:
             yield event.plain_result(f"✅ {msg}")
