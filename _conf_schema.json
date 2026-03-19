@@ -96,5 +96,10 @@
     "description": "默认评论内容（当未指定评论内容时使用）",
     "type": "string",
     "default": "这期神了"
+  },
+  "comment_library": {
+    "description": "评论词库（多个评论用|分隔，会随机选择一个）",
+    "type": "string",
+    "default": "这期神了|学到了|太牛了|666|支持一下|点赞了|不错|真香"
   }
 }
