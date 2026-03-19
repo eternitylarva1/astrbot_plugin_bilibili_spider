@@ -99,7 +99,7 @@
   },
   "comment_library": {
     "description": "评论词库（点击添加按钮分别填写评论和适用条件）",
-    "type": "array",
+    "type": "list",
     "items": {
       "type": "object",
       "properties": {
