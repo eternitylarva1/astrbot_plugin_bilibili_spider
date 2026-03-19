@@ -808,20 +808,15 @@ class BilibiliPlugin(Star):
         self.comment_interval = config.get("comment_interval", 2.0)
         self.default_comment = config.get("default_comment", "这期神了")
         
-        # 评论词库（支持多种格式）
-        comment_library = config.get("comment_library", {})
-        if isinstance(comment_library, dict):
-            # 新格式：object {items: [...]}
-            items = comment_library.get("items", [])
-            self.comment_library = items if isinstance(items, list) else []
-        elif isinstance(comment_library, list):
-            # 旧格式：直接是列表
-            self.comment_library = comment_library
-        elif isinstance(comment_library, str) and comment_library:
-            # 更旧的格式：字符串
-            self.comment_library = parse_comment_library(comment_library)
-        else:
-            self.comment_library = []
+        # 评论词库（从分开配置的列表合并）
+        comment_list = config.get("comment_list", [])
+        condition_list = config.get("condition_list", [])
+        
+        # 合并为 [{comment, condition}, ...] 格式
+        self.comment_library = []
+        for i, comment in enumerate(comment_list):
+            condition = condition_list[i] if i < len(condition_list) else ""
+            self.comment_library.append({"comment": comment, "condition": condition})
         
         # LLM评论选择
         self.use_llm_select_comment = config.get("use_llm_select_comment", True)
