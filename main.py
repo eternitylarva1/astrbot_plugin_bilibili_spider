@@ -808,9 +808,16 @@ class BilibiliPlugin(Star):
         self.comment_interval = config.get("comment_interval", 2.0)
         self.default_comment = config.get("default_comment", "这期神了")
         
-        # 评论词库（解析带条件的格式）
-        comment_library_str = config.get("comment_library", "")
-        self.comment_library = parse_comment_library(comment_library_str) if comment_library_str else []
+        # 评论词库（支持新格式list和旧格式string）
+        comment_library = config.get("comment_library", [])
+        if isinstance(comment_library, list):
+            # 新格式：直接是列表
+            self.comment_library = comment_library
+        elif isinstance(comment_library, str) and comment_library:
+            # 旧格式：字符串，需要解析
+            self.comment_library = parse_comment_library(comment_library)
+        else:
+            self.comment_library = []
         
         # LLM评论选择
         self.use_llm_select_comment = config.get("use_llm_select_comment", True)
