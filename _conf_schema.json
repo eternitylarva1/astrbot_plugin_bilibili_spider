@@ -97,37 +97,15 @@
     "type": "string",
     "default": "这期神了"
   },
-  "comment_library": {
-    "description": "评论词库（每项包含评论内容和适用条件）",
-    "type": "object",
-    "properties": {
-      "items": {
-        "type": "list",
-        "items": {
-          "type": "object",
-          "properties": {
-            "comment": {
-              "type": "string",
-              "description": "评论内容"
-            },
-            "condition": {
-              "type": "string",
-              "description": "适用条件"
-            }
-          }
-        }
-      }
-    },
-    "default": {
-      "items": [
-        {"comment": "这期神了", "condition": "用于整活、动画手书"},
-        {"comment": "支持up!", "condition": "分享原创打法/攻略"},
-        {"comment": "来啦", "condition": "大主播切片、录播"},
-        {"comment": "太牛了", "condition": "高质量、技术类内容"},
-        {"comment": "666", "condition": "通用好评"},
-        {"comment": "学到了", "condition": "教程、学习类视频"}
-      ]
-    }
+  "comment_list": {
+    "description": "评论内容列表",
+    "type": "list",
+    "default": ["这期神了", "支持up!", "来啦", "太牛了", "666", "学到了"]
+  },
+  "condition_list": {
+    "description": "评论对应的适用条件（与评论列表一一对应）",
+    "type": "list",
+    "default": ["用于整活、动画手书", "分享原创打法/攻略", "大主播切片、录播", "高质量、技术类内容", "通用好评", "教程、学习类视频"]
   },
   "use_llm_select_comment": {
     "description": "使用LLM智能选择评论（根据视频内容选择最合适的评论）",
