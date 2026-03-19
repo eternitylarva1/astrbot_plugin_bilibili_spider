@@ -859,20 +859,34 @@ class BilibiliPlugin(Star):
         # 发送合并转发消息
         yield event.chain_result(nodes)
 
-        # 评论（如果启用）- 在搜索结果发送后评论第一个视频
+        # 评论（如果启用）- 评论所有搜索到的视频
         if enable_comment and videos and self.comment_sender:
-            first_video = videos[0]
-            bvid = first_video.get("bvid")
-            title = first_video.get("title", "")
+            yield event.plain_result(f"📝 开始评论，共 {len(videos)} 个视频")
             
-            yield event.plain_result(f"📝 正在发送评论到第一个视频: {title}")
+            success_count = 0
+            skip_count = 0
+            fail_count = 0
             
-            success, msg = await self.comment_sender.send_comment(bvid, comment_content)
+            for i, video in enumerate(videos):
+                bvid = video.get("bvid")
+                title = video.get("title", "")
+                
+                logger.info(f"评论进度: {i+1}/{len(videos)} - {title}")
+                yield event.plain_result(f"   [{i+1}/{len(videos)}] 评论: {title}")
+                
+                success, msg = await self.comment_sender.send_comment(bvid, comment_content)
+                
+                if success:
+                    success_count += 1
+                    yield event.plain_result(f"   ✅ 成功")
+                elif "已评论过" in msg:
+                    skip_count += 1
+                    yield event.plain_result(f"   ⏭️ 跳过（已评论）")
+                else:
+                    fail_count += 1
+                    yield event.plain_result(f"   ❌ 失败: {msg}")
             
-            if success:
-                yield event.plain_result(f"✅ {msg}")
-            else:
-                yield event.plain_result(f"❌ 评论失败: {msg}")
+            yield event.plain_result(f"\n📊 评论完成！成功: {success_count} | 跳过: {skip_count} | 失败: {fail_count}")
 
     @filter.command("b站热门")
     async def bilibili_hot(self, event: AstrMessageEvent):
@@ -1158,21 +1172,34 @@ class BilibiliPlugin(Star):
         # 发送合并转发消息
         yield event.chain_result(nodes)
         
-        # 评论（如果启用）
+        # 评论（如果启用）- 评论所有视频
         if comment and videos and self.comment_sender:
-            first_video = videos[0]
-            bvid = first_video.get("bvid")
-            title = first_video.get("title", "")
             comment_content = self.default_comment
+            yield event.plain_result(f"📝 开始评论，共 {len(videos)} 个视频")
             
-            yield event.plain_result(f"📝 正在发送评论到第一个视频: {title}")
+            success_count = 0
+            skip_count = 0
+            fail_count = 0
             
-            success, msg = await self.comment_sender.send_comment(bvid, comment_content)
+            for i, video in enumerate(videos):
+                bvid = video.get("bvid")
+                title = video.get("title", "")
+                
+                yield event.plain_result(f"   [{i+1}/{len(videos)}] 评论: {title}")
+                
+                success, msg = await self.comment_sender.send_comment(bvid, comment_content)
+                
+                if success:
+                    success_count += 1
+                    yield event.plain_result(f"   ✅ 成功")
+                elif "已评论过" in msg:
+                    skip_count += 1
+                    yield event.plain_result(f"   ⏭️ 跳过")
+                else:
+                    fail_count += 1
+                    yield event.plain_result(f"   ❌ 失败: {msg}")
             
-            if success:
-                yield event.plain_result(f"✅ {msg}")
-            else:
-                yield event.plain_result(f"❌ 评论失败: {msg}")
+            yield event.plain_result(f"\n📊 评论完成！成功: {success_count} | 跳过: {skip_count} | 失败: {fail_count}")
 
     async def terminate(self):
         """插件卸载时调用"""
