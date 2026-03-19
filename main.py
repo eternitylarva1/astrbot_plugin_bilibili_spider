@@ -108,35 +108,14 @@ class BilibiliCommentSender:
             max_daily: 每日最大评论数
             comment_interval: 评论间隔（秒）
         """
-        from bilibili_api import Credential
-        from urllib.parse import unquote
-        
-        # 解析 SESSDATA（可能包含 URL 编码）
-        parsed_sessdata = sessdata
-        if sessdata:
-            try:
-                parsed_sessdata = unquote(sessdata)
-            except Exception:
-                pass
-        
-        # 解析 bili_jct
-        parsed_bili_jct = bili_jct
-        if bili_jct:
-            try:
-                parsed_bili_jct = unquote(bili_jct)
-            except Exception:
-                pass
-        
-        self.credential = Credential(
-            sessdata=parsed_sessdata or "",
-            bili_jct=parsed_bili_jct or "",
-            buvid3=buvid3
-        )
+        # 清理空白字符并存储
+        self.clean_sessdata = sessdata.strip() if sessdata else ""
+        self.clean_bili_jct = bili_jct.strip() if bili_jct else ""
         
         # 记录配置状态（不记录实际值）
-        has_sessdata = bool(sessdata and len(sessdata) > 10)
-        has_bili_jct = bool(bili_jct and len(bili_jct) > 5)
-        logger.info(f"B站评论发送器初始化 | SESSDATA: {'已配置' if has_sessdata else '未配置'} (长度:{len(sessdata) if sessdata else 0}) | bili_jct: {'已配置' if has_bili_jct else '未配置'} (长度:{len(bili_jct) if bili_jct else 0})")
+        has_sessdata = bool(self.clean_sessdata and len(self.clean_sessdata) > 10)
+        has_bili_jct = bool(self.clean_bili_jct and len(self.clean_bili_jct) > 5)
+        logger.info(f"B站评论发送器初始化 | SESSDATA: {'已配置' if has_sessdata else '未配置'} (长度:{len(self.clean_sessdata)}) | bili_jct: {'已配置' if has_bili_jct else '未配置'} (长度:{len(self.clean_bili_jct)})")
         
         # 安全机制
         self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
@@ -239,7 +218,7 @@ class BilibiliCommentSender:
     
     async def send_comment(self, bvid: str, content: str):
         """
-        发送根评论
+        发送根评论（使用requests直接调用API）
         
         Args:
             bvid: 视频BV号
@@ -248,8 +227,8 @@ class BilibiliCommentSender:
         Returns:
             (success: bool, message: str)
         """
-        from bilibili_api import video, comment
-        from bilibili_api.comment import CommentResourceType
+        import requests
+        import json
         
         # 检查是否已评论（本地记录）
         if self.is_commented(bvid):
@@ -269,10 +248,27 @@ class BilibiliCommentSender:
         try:
             await self.rate_limiter.acquire()
             
-            v = video.Video(bvid=bvid, credential=self.credential)
-            video_info = await v.get_info()
-            aid = video_info.get("aid")
-            title = video_info.get("title", "未知标题")
+            # 直接用requests获取视频信息
+            view_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.bilibili.com",
+            }
+            cookies = {
+                "SESSDATA": self.clean_sessdata,
+                "bili_jct": self.clean_bili_jct,
+                "buvid3": "F",
+            }
+            
+            resp = requests.get(view_url, headers=headers, cookies=cookies, timeout=10)
+            data = resp.json()
+            
+            if data.get("code") != 0:
+                return False, f"获取视频信息失败: {data.get('message')}"
+            
+            video_data = data.get("data", {})
+            aid = video_data.get("aid")
+            title = video_data.get("title", "未知标题")
             
             logger.info(f"📺 视频: {title} (av{aid})")
             
@@ -285,51 +281,57 @@ class BilibiliCommentSender:
         try:
             await self.rate_limiter.acquire()
             
-            result = await comment.send_comment(
-                text=content,
-                oid=aid,
-                type_=CommentResourceType.VIDEO,
-                credential=self.credential
-            )
+            # 直接用requests发送评论
+            post_url = "https://api.bilibili.com/x/v2/reply/add"
+            post_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.bilibili.com",
+                "Origin": "https://www.bilibili.com",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            }
+            post_data = {
+                "oid": str(aid),
+                "type": "1",
+                "message": content,
+                "plat": "1",
+                "csrf": self.clean_bili_jct,
+            }
             
-            if result is None:
+            resp = requests.post(post_url, headers=post_headers, cookies=cookies, data=post_data, timeout=10)
+            result = resp.json()
+            
+            code = result.get("code", -1)
+            
+            if code == 0:
+                data = result.get("data", {})
+                rpid = data.get("rpid")
+                
+                if rpid:
+                    self.circuit_breaker.record_success()
+                    self.record_comment(bvid, content, title)
+                    logger.info(f"✅ 评论发送成功! rpid: {rpid}")
+                    return True, f"评论发送成功！\n视频: {title}\n评论: {content}"
+                return False, "评论发送成功但未返回ID"
+            
+            # 错误码处理
+            error_msgs = {
+                -101: "账号未登录 (SESSDATA无效或已过期)",
+                -400: "请求错误",
+                -403: "权限不足，可能是Cookie已过期",
+                12002: "评论已被删除",
+                12051: "评论内容重复",
+                12053: "评论审核中",
+                12061: "评论已关闭",
+            }
+            
+            msg = error_msgs.get(code, result.get("message", "未知错误"))
+            logger.error(f"评论发送失败 [{code}]: {msg}")
+            
+            # 严重错误熔断
+            if code in [-101, -400]:
                 self.circuit_breaker.record_failure()
-                return False, "网络错误，请稍后重试"
             
-            if isinstance(result, dict):
-                code = result.get("code", -1)
-                
-                if code == 0:
-                    data = result.get("data", {})
-                    rpid = data.get("rpid") if isinstance(data, dict) else None
-                    
-                    if rpid:
-                        self.circuit_breaker.record_success()
-                        # 记录评论
-                        self.record_comment(bvid, content, title)
-                        logger.info(f"✅ 评论发送成功! rpid: {rpid}")
-                        return True, f"评论发送成功！\n视频: {title}\n评论: {content}"
-                    return False, "评论发送成功但未返回ID"
-                
-                # 错误码处理
-                error_msgs = {
-                    -101: "账号未登录 (SESSDATA无效或已过期，请重新获取)",
-                    -400: "请求错误",
-                    -403: "权限不足，可能是Cookie已过期",
-                    12002: "评论已被删除",
-                    12051: "评论内容重复",
-                    12053: "评论审核中",
-                    12061: "评论已关闭",
-                }
-                
-                msg = error_msgs.get(code, result.get("message", "未知错误"))
-                logger.error(f"评论发送失败 [{code}]: {msg} | 原始响应: {result}")
-                
-                # 严重错误熔断
-                if code in [-101, -400]:
-                    self.circuit_breaker.record_failure()
-                
-                return False, f"接口返回错误代码：{code}，信息：{msg}"
+            return False, f"接口返回错误代码：{code}，信息：{msg}"
             
             return False, "未知响应格式"
             
