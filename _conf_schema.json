@@ -98,30 +98,36 @@
     "default": "这期神了"
   },
   "comment_library": {
-    "description": "评论词库（点击添加按钮分别填写评论和适用条件）",
-    "type": "list",
-    "items": {
-      "type": "object",
-      "properties": {
-        "comment": {
-          "type": "string",
-          "description": "评论内容"
-        },
-        "condition": {
-          "type": "string",
-          "description": "适用条件"
+    "description": "评论词库（每项包含评论内容和适用条件）",
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "list",
+        "items": {
+          "type": "object",
+          "properties": {
+            "comment": {
+              "type": "string",
+              "description": "评论内容"
+            },
+            "condition": {
+              "type": "string",
+              "description": "适用条件"
+            }
+          }
         }
-      },
-      "required": ["comment"]
+      }
     },
-    "default": [
-      {"comment": "这期神了", "condition": "用于整活、动画手书"},
-      {"comment": "支持up!", "condition": "分享原创打法/攻略"},
-      {"comment": "来啦", "condition": "大主播切片、录播"},
-      {"comment": "太牛了", "condition": "高质量、技术类内容"},
-      {"comment": "666", "condition": "通用好评"},
-      {"comment": "学到了", "condition": "教程、学习类视频"}
-    ]
+    "default": {
+      "items": [
+        {"comment": "这期神了", "condition": "用于整活、动画手书"},
+        {"comment": "支持up!", "condition": "分享原创打法/攻略"},
+        {"comment": "来啦", "condition": "大主播切片、录播"},
+        {"comment": "太牛了", "condition": "高质量、技术类内容"},
+        {"comment": "666", "condition": "通用好评"},
+        {"comment": "学到了", "condition": "教程、学习类视频"}
+      ]
+    }
   },
   "use_llm_select_comment": {
     "description": "使用LLM智能选择评论（根据视频内容选择最合适的评论）",
