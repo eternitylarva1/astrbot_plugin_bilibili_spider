@@ -98,8 +98,18 @@
     "default": "这期神了"
   },
   "comment_library": {
-    "description": "评论词库（多个评论用|分隔，会随机选择一个）",
+    "description": "评论词库（多个评论用|分隔）",
     "type": "string",
     "default": "这期神了|学到了|太牛了|666|支持一下|点赞了|不错|真香"
+  },
+  "use_llm_select_comment": {
+    "description": "使用LLM智能选择评论（根据视频内容选择最合适的评论）",
+    "type": "bool",
+    "default": true
+  },
+  "comment_selection_prompt": {
+    "description": "评论选择提示词",
+    "type": "string",
+    "default": "你是一个B站评论助手。根据视频标题，判断最合适的评论选项。注意：盗版搬运、资源分享类视频不要选择「支持up」。\n\n视频标题列表：{video_titles}\n\n评论选项：\n{comment_options}\n\n请仔细分析每个视频的标题，选择最贴切的评论。盗版搬运、分享盗版资源（标题明显是分享他人作品而非原创）的不要选「支持up」。\n\n要求：\n1. 为每个视频选择一个最合适的评论\n2. 盗版搬运、资源分享类视频不要选择「支持up」\n3. 回复格式：每个视频一行，用|分隔，格式：BV号|选择的评论\n4. 例如：BV1xxx411c7mD|这期神了\n5. 如果无法判断视频内容类型，选一个安全的评论如「这期神了」或「学到了」"
   }
 }
