@@ -7,19 +7,20 @@ B站视频搜索爬虫插件 for AstrBot
 支持B站评论功能
 """
 
-import requests
-import json
+import sqlite3
 import time
 import asyncio
 from datetime import datetime
-from urllib.parse import quote, unquote
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from collections import deque
 from dataclasses import dataclass
+import requests
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 import astrbot.api.message_components as Comp
 
 
@@ -142,11 +143,11 @@ class BilibiliCommentSender:
         logger.info(f"B站评论发送器已初始化 | 每日限额: {max_daily} | 间隔: {comment_interval}s | 已记录视频: {len(self.commented_videos)}")
     
     def _get_data_dir(self) -> str:
-        """获取数据目录"""
+        """获取数据目录（符合 AstrBot 插件数据存储规范）"""
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
         import os
-        # 使用插件目录
-        plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        data_dir = os.path.join(plugin_dir, "data")
+        base = get_astrbot_plugin_data_path()
+        data_dir = os.path.join(base, "astrbot_plugin_bilibili_spider")
         os.makedirs(data_dir, exist_ok=True)
         return data_dir
     
@@ -350,6 +351,80 @@ class BilibiliCommentSender:
         """获取状态信息"""
         self._reset_daily_count()
         return f"今日已评论: {self.daily_comment_count}/{self.max_daily} | 熔断器: {self.circuit_breaker.state}"
+
+
+class VideoDB:
+    """视频数据持久化数据库，以 BV 号为主键"""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS video_history (
+                bvid         TEXT PRIMARY KEY,
+                title        TEXT NOT NULL,
+                author       TEXT,
+                play_count   INTEGER DEFAULT 0,
+                pubdate      INTEGER,
+                pubdate_str  TEXT,
+                duration     TEXT,
+                url          TEXT,
+                last_updated TEXT NOT NULL
+            )
+        """
+        )
+        self.conn.commit()
+
+    def upsert_video(self, video: dict) -> None:
+        """插入或更新单条视频记录"""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.conn.execute(
+            """
+            INSERT INTO video_history
+                (bvid, title, author, play_count, pubdate, pubdate_str, duration, url, last_updated)
+            VALUES
+                (:bvid, :title, :author, :play_count, :pubdate, :pubdate_str, :duration, :url, :last_updated)
+            ON CONFLICT(bvid) DO UPDATE SET
+                title        = excluded.title,
+                author       = excluded.author,
+                play_count   = excluded.play_count,
+                pubdate      = excluded.pubdate,
+                pubdate_str  = excluded.pubdate_str,
+                duration     = excluded.duration,
+                url          = excluded.url,
+                last_updated = excluded.last_updated
+            """,
+            {
+                "bvid": video["bvid"],
+                "title": video["title"],
+                "author": video.get("author", ""),
+                "play_count": video.get("play_count", 0),
+                "pubdate": video.get("pubdate", 0),
+                "pubdate_str": video.get("pubdate_str", ""),
+                "duration": video.get("duration", ""),
+                "url": video.get("url", ""),
+                "last_updated": now_str,
+            },
+        )
+        self.conn.commit()
+
+    def upsert_videos(self, videos: List[dict]) -> int:
+        """批量插入或更新视频记录，返回处理数量"""
+        for v in videos:
+            self.upsert_video(v)
+        return len(videos)
+
+    def get_all(self) -> List[dict]:
+        """返回所有历史记录，按 last_updated 倒序"""
+        cur = self.conn.execute(
+            "SELECT bvid, title, author, play_count, pubdate, pubdate_str, duration, url, last_updated FROM video_history ORDER BY last_updated DESC"
+        )
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def close(self) -> None:
+        self.conn.close()
 
 
 class BilibiliSpider:
@@ -843,6 +918,14 @@ class BilibiliPlugin(Star):
                 comment_interval=self.comment_interval
             )
 
+        # 初始化视频历史数据库
+        data_dir = get_astrbot_data_path()
+        if isinstance(data_dir, str):
+            data_dir = Path(data_dir)
+        data_dir = data_dir / "plugin_data" / "astrbot_plugin_bilibili_spider"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self.db = VideoDB(str(data_dir / "bilibili_video_history.db"))
+
         # 构建日志信息
         tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
         tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
@@ -976,6 +1059,11 @@ class BilibiliPlugin(Star):
         if videos is None:
             yield event.plain_result("❌ 搜索失败：B站访问过于频繁，请稍后再试或检查SESSDATA是否过期")
             return
+
+        # 保存到历史数据库
+        if videos:
+            saved = self.db.upsert_videos(videos)
+            logger.info(f"已保存 {saved} 条视频记录到历史数据库")
 
         # 构建转发消息内容
         nodes = []
@@ -1117,6 +1205,11 @@ class BilibiliPlugin(Star):
                 enable_filter=True,
                 order=order,
             )
+
+        # 保存到历史数据库
+        if videos:
+            saved = self.db.upsert_videos(videos)
+            logger.info(f"已保存 {saved} 条视频记录到历史数据库")
 
         # 构建转发消息内容
         nodes = []
@@ -1569,4 +1662,5 @@ class BilibiliPlugin(Star):
 
     async def terminate(self):
         """插件卸载时调用"""
+        self.db.close()
         logger.info("B站爬虫插件已卸载")

@@ -111,5 +111,11 @@
     "description": "使用LLM智能选择评论（根据视频内容选择最合适的评论）",
     "type": "bool",
     "default": true
+  },
+  "enable_history": {
+    "description": "是否将搜索结果写入历史数据库",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后可记录每次搜索的视频数据，用于后续趋势分析"
   }
 }

@@ -1,7 +1,10 @@
+plugin_id: astrbot_plugin_bilibili_spider
 name: astrbot_plugin_bilibili_spider
+display_name: B站视频爬虫
 version: 1.0.0
-description: B站视频搜索爬虫插件，支持按播放量/发布时间排序
-author: gaoming
+description: B站视频搜索爬虫插件，支持按播放量/发布时间排序，可将搜索结果持久化到 SQLite 数据库
+author: eternitylarva1
+repo: https://github.com/eternitylarva1/astrbot_plugin_bilibili_spider/tree/main
 support_platforms:
   - qq_official
   - telegram
