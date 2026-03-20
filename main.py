@@ -1188,16 +1188,95 @@ class BilibiliPlugin(Star):
             f"📌 已评论视频数: {len(self.comment_sender.commented_videos) if self.comment_sender else 0}",
             "",
             "💡 使用说明:",
-            "  /b站搜索 <关键词> [数量] - 搜索视频（默认数量用分层筛选，指定数量用统一阈值）",
-            "  /b站搜索 <关键词> 数量 总结 - 搜索并AI总结",
-            "  /b站搜索 <关键词> 评论 <内容> - 搜索视频并评论第一个结果",
+            "  /b站搜索 <关键词> [数量] - 搜索视频",
+            "  /b站搜索 <关键词> 评论 - 搜索并评论所有视频",
             "  /b站热门 - 使用默认配置搜索",
-            "  /b站热门 总结 - 热门搜索并AI总结",
-            "  /b站评论 <BV号> <内容> - 直接发送评论",
+            "  /b站评论 <BV号> [内容] - 直接发送评论",
             "  /b站评论记录 - 查看已评论的视频列表",
+            "  /b站日志 - 查看爬虫日志",
             "  /b站配置 - 查看当前配置",
         ]
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("b站日志")
+    async def bilibili_log(self, event: AstrMessageEvent):
+        """
+        查看B站爬虫日志
+        用法: /b站日志 [行数]
+        示例: /b站日志 50
+        """
+        import os
+        import re
+        
+        message = event.message_str.strip()
+        parts = message.split()
+        
+        # 跳过命令名
+        if parts and parts[0] in ["b站日志", "/b站日志"]:
+            parts = parts[1:]
+        
+        # 获取行数，默认50
+        try:
+            lines = int(parts[0]) if parts else 50
+            lines = min(lines, 200)  # 最多200行
+        except ValueError:
+            lines = 50
+        
+        # 查找AstrBot日志文件
+        log_paths = [
+            # AstrBot实例日志
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "astrbot.log"),
+            # 插件目录下的日志
+            os.path.join(os.path.dirname(__file__), "data", "bilibili.log"),
+        ]
+        
+        # 也尝试从环境变量或配置获取
+        instance_dir = os.environ.get("ASTRBOT_INSTANCE_DIR", "")
+        if instance_dir:
+            log_paths.insert(0, os.path.join(instance_dir, "logs", "astrbot.log"))
+        
+        log_content = []
+        found_log = None
+        
+        for log_path in log_paths:
+            if os.path.exists(log_path):
+                found_log = log_path
+                try:
+                    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                        all_lines = f.readlines()
+                        log_content = all_lines[-lines:]
+                except Exception as e:
+                    log_content = [f"读取日志失败: {e}"]
+                break
+        
+        if not found_log:
+            yield event.plain_result("❌ 未找到日志文件\n\n日志文件通常位于:\n• AstrBot安装目录/logs/astrbot.log\n• 或实例目录/logs/astrbot.log")
+            return
+        
+        # 过滤B站相关日志
+        bilibili_logs = []
+        for line in log_content:
+            if "bilibili" in line.lower() or "b站" in line or "B站" in line or "BiliBili" in line or "爬虫" in line or "搜索" in line or "评论" in line:
+                bilibili_logs.append(line.strip())
+        
+        if not bilibili_logs:
+            yield event.plain_result(f"📋 日志文件: {found_log}\n\n最近{len(log_content)}行中没有找到B站相关日志")
+            return
+        
+        # 如果过滤后太多，也显示全部日志的末尾
+        if len(bilibili_logs) > 50:
+            result_lines = ["📋 B站相关日志 (最后50条):", ""]
+            for line in bilibili_logs[-50:]:
+                # 清理日志格式
+                line = re.sub(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}.*?\] ', '', line)
+                result_lines.append(line)
+        else:
+            result_lines = [f"📋 B站相关日志 (共{len(bilibili_logs)}条):", ""]
+            for line in bilibili_logs:
+                line = re.sub(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}.*?\] ', '', line)
+                result_lines.append(line)
+        
+        yield event.plain_result("\n".join(result_lines))
 
     @filter.command("b站评论")
     async def bilibili_comment(self, event: AstrMessageEvent):
