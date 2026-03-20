@@ -448,40 +448,52 @@ class BilibiliSpider:
         page_size = 30
         page = 1
         filtered_count = 0
+        total_fetched = 0
 
         while filtered_count < min_filtered_count:
             result = self.search_videos(keyword, page=page, page_size=page_size, order=order)
 
             if not result or result.get("code") != 0:
+                logger.warning(f"搜索失败或API返回错误: {result}")
                 break
 
             data = result.get("data", {})
             result_list = data.get("result", [])
 
             if not result_list:
+                logger.info(f"第{page}页无结果，停止搜索")
                 break
+
+            total_fetched += len(result_list)
+            page_filtered = 0
 
             for item in result_list:
                 video_info = self._parse_video_item(item)
 
                 # 检查是否满足分层筛选条件
-                # 5小时内: >2000/小时, 5-24小时: >1500/小时, 24小时以上: >1000/小时
                 if self.check_video_filter(video_info, use_tiered=True):
                     videos.append(video_info)
                     filtered_count += 1
+                    page_filtered += 1
+
+                    logger.info(f"  [通过] {video_info.get('title', '')[:30]} | {video_info.get('play_per_hour', 0):.0f}/h | {video_info.get('hours_since_publish', 0):.1f}h")
 
                     if filtered_count >= min_filtered_count:
                         break
+
+            logger.info(f"第{page}页: 获取{len(result_list)}个，通过筛选{page_filtered}个，累计通过{filtered_count}/{min_filtered_count}")
 
             if filtered_count >= min_filtered_count:
                 break
 
             if len(result_list) < page_size:
+                logger.info(f"结果少于page_size({page_size})，停止搜索")
                 break
 
             page += 1
             time.sleep(0.5)
 
+        logger.info(f"搜索完成: 共获取{total_fetched}个视频，通过筛选{len(videos)}个")
         return videos
 
     def search_videos_normal(
