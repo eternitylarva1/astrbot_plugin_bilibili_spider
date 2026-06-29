@@ -10,6 +10,8 @@ B站视频搜索爬虫插件 for AstrBot
 import sqlite3
 import time
 import asyncio
+import uuid
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -95,7 +97,7 @@ class BilibiliCommentSender:
         self,
         bili_jct: str = "",
         sessdata: str = "",
-        buvid3: str = "F",
+        buvid3: str = "",
         max_daily: int = 100,
         comment_interval: float = 2.0,
     ):
@@ -105,13 +107,16 @@ class BilibiliCommentSender:
         Args:
             bili_jct: B站 bili_jct Cookie
             sessdata: B站 SESSDATA Cookie
-            buvid3: B站 buvid3 Cookie
+            buvid3: B站 buvid3 Cookie（留空自动生成）
             max_daily: 每日最大评论数
             comment_interval: 评论间隔（秒）
         """
         # 清理空白字符并存储
         self.clean_sessdata = sessdata.strip() if sessdata else ""
         self.clean_bili_jct = bili_jct.strip() if bili_jct else ""
+        
+        # 生成真实的 buvid3（避免被反爬识别为默认值）
+        self._buvid3 = buvid3 if buvid3 else str(uuid.uuid4()).upper()
         
         # 记录配置状态（不记录实际值）
         has_sessdata = bool(self.clean_sessdata and len(self.clean_sessdata) > 10)
@@ -252,13 +257,13 @@ class BilibiliCommentSender:
             # 直接用requests获取视频信息
             view_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
                 "Referer": "https://www.bilibili.com",
             }
             cookies = {
                 "SESSDATA": self.clean_sessdata,
                 "bili_jct": self.clean_bili_jct,
-                "buvid3": "F",
+                "buvid3": self._buvid3,
             }
             
             resp = requests.get(view_url, headers=headers, cookies=cookies, timeout=10)
@@ -285,7 +290,7 @@ class BilibiliCommentSender:
             # 直接用requests发送评论
             post_url = "https://api.bilibili.com/x/v2/reply/add"
             post_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
                 "Referer": "https://www.bilibili.com",
                 "Origin": "https://www.bilibili.com",
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -438,8 +443,12 @@ class BilibiliSpider:
         tier_thresholds: list = None,
         default_threshold: float = 1500.0,
     ):
+        # 生成更真实的 buvid3（避免被反爬识别为默认值）
+        self._buvid3 = str(uuid.uuid4()).upper()
+        self._buvid4 = f"{random.randint(0, 9)}{uuid.uuid4().hex[:7]}".upper()
+        
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
             "Referer": "https://www.bilibili.com",
             "Origin": "https://www.bilibili.com",
             "Accept": "application/json, text/plain, */*",
@@ -447,8 +456,8 @@ class BilibiliSpider:
         }
         # 基础 cookies
         self.cookies = {
-            "buvid3": "F",
-            "buvid4": "F",
+            "buvid3": self._buvid3,
+            "buvid4": self._buvid4,
         }
         if sessdata:
             # 解析 SESSDATA，可能包含 URL 编码
@@ -499,13 +508,24 @@ class BilibiliSpider:
         try:
             response = self.session.get(self.base_url, params=params, timeout=10)
             # 记录响应状态和部分内容用于调试
-            logger.info(f"B站API响应: status={response.status_code}, url={response.url}")
+            content_type = response.headers.get("Content-Type", "")
+            logger.info(f"B站API响应: status={response.status_code}, content-type={content_type}, url={response.url}")
+            
             if response.status_code != 200:
-                logger.warning(f"B站API非200响应: {response.text[:200]}")
-            response.raise_for_status()
+                logger.warning(f"B站API非200响应: {response.text[:300]}")
+                return None
+            
+            # 检查 Content-Type 确保是 JSON
+            if "json" not in content_type and not response.text.strip().startswith("{"):
+                logger.warning(f"B站API返回非JSON内容 (content-type={content_type}): {response.text[:300]}")
+                return None
+            
             return response.json()
         except requests.RequestException as e:
-            logger.error(f"B站搜索请求失败: {e}")
+            logger.error(f"B站搜索请求异常: {e}")
+            return None
+        except ValueError as e:
+            logger.error(f"B站API返回非JSON响应, 原始内容前300字: {response.text[:300]}")
             return None
 
     def search_videos_until_filtered(
