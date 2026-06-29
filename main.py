@@ -9,6 +9,7 @@ B站视频搜索爬虫插件 for AstrBot
 
 import sqlite3
 import time
+import hashlib
 import asyncio
 import uuid
 import random
@@ -479,12 +480,58 @@ class BilibiliSpider:
         tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
         tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
         
-        self.base_url = "https://api.bilibili.com/x/web-interface/search/type"
+        # WBI 签名密钥（B站 2024 年起要求搜索 API 必须带 WBI 签名）
+        self.base_url = "https://api.bilibili.com/x/web-interface/wbi/search/type"
+        self._mixin_key = ""
+        self._wbi_ready = False
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         self.session.cookies.update(self.cookies)
         
         logger.info(f"B站爬虫初始化 | SESSDATA已配置: {bool(sessdata)} | 分层筛选: {tiered_filter} | 阈值: {tier_str} | 统一阈值: {default_threshold}/h")
+
+    def _fetch_wbi_keys(self) -> bool:
+        """获取 WBI 签名密钥（从 nav API 拉取 img_key 和 sub_key）"""
+        if self._wbi_ready:
+            return True
+        try:
+            resp = self.session.get(
+                "https://api.bilibili.com/x/web-interface/nav",
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning(f"获取WBI密钥失败: {data.get('message')}")
+                return False
+            wbi_img = data.get("data", {}).get("wbi_img", {})
+            if not wbi_img:
+                logger.warning("nav API 未返回 wbi_img")
+                return False
+            img_key = wbi_img["img_url"].rsplit("/", 1)[1].split(".")[0]
+            sub_key = wbi_img["sub_url"].rsplit("/", 1)[1].split(".")[0]
+            raw_key = img_key + sub_key
+            # WBI 切片表（固定，与 B站前端一致）
+            mixin_tab = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+                         27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13]
+            self._mixin_key = ''.join(raw_key[i] for i in mixin_tab if i < len(raw_key))[:32]
+            self._wbi_ready = True
+            logger.info(f"WBI 密钥已获取 (key前8位: {self._mixin_key[:8]}...)")
+            return True
+        except Exception as e:
+            logger.warning(f"获取WBI密钥异常: {e}")
+            return False
+
+    def _sign_wbi(self, params: dict) -> dict:
+        """对请求参数进行 WBI 签名，添加 w_rid 和 wts"""
+        if not self._wbi_ready:
+            if not self._fetch_wbi_keys():
+                return params  # 签名失败，返回原参数（可能被反爬拦截）
+        params["wts"] = int(time.time())
+        sorted_items = sorted(params.items(), key=lambda x: x[0])
+        query_string = "&".join(f"{k}={v}" for k, v in sorted_items)
+        sign_string = query_string + self._mixin_key
+        params["w_rid"] = hashlib.md5(sign_string.encode()).hexdigest()
+        return params
 
     def search_videos(
         self, keyword: str, page: int = 1, page_size: int = 30, order: str = "pubdate"
@@ -504,6 +551,8 @@ class BilibiliSpider:
             "page_size": page_size,
             "order": order,
         }
+        # WBI 签名
+        params = self._sign_wbi(params)
 
         try:
             response = self.session.get(self.base_url, params=params, timeout=10)
