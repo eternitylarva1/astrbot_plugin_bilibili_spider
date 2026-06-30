@@ -440,9 +440,10 @@ class BilibiliSpider:
         self,
         sessdata: str = "",
         tiered_filter: bool = True,
-        tier_hours: list = None,
-        tier_thresholds: list = None,
         default_threshold: float = 1500.0,
+        play_per_hour_threshold: float = 1500.0,
+        play_count_week_threshold: int = 5000,
+        play_count_month_threshold: int = 3000,
     ):
         # 生成更真实的 buvid3（避免被反爬识别为默认值）
         self._buvid3 = str(uuid.uuid4()).upper()
@@ -471,14 +472,16 @@ class BilibiliSpider:
 
         # 分层筛选配置
         self.tiered_filter = tiered_filter
-        # 默认分层配置: 5h, 24h, 阈值: 2000, 1500, 1000
-        self.tier_hours = tier_hours if tier_hours else [5, 24]
-        self.tier_thresholds = tier_thresholds if tier_thresholds else [2000, 1500, 1000]
         self.default_threshold = default_threshold
+        # 两段式筛选阈值
+        self.play_per_hour_threshold = play_per_hour_threshold
+        self.play_count_week_threshold = play_count_week_threshold
+        self.play_count_month_threshold = play_count_month_threshold
         
         # 构建日志信息
-        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        tier_str = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+            self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+        )
         
         # WBI 签名密钥（B站 2024 年起要求搜索 API 必须带 WBI 签名）
         self.base_url = "https://api.bilibili.com/x/web-interface/wbi/search/type"
@@ -721,32 +724,22 @@ class BilibiliSpider:
             "hours_since_publish": round(hours_since_publish, 2),
         }
 
-    def get_tiered_threshold(self, hours_since_publish: float) -> float:
-        """根据视频发布时间计算分层阈值"""
-        for i, hour_limit in enumerate(self.tier_hours):
-            if hours_since_publish <= hour_limit:
-                return self.tier_thresholds[i]
-        # 超过所有时间节点，使用最后一个阈值
-        return self.tier_thresholds[-1]
-
     def check_video_filter(self, video: dict, use_tiered: bool = True) -> bool:
-        """检查视频是否满足筛选条件
-        
-        Args:
-            video: 视频信息字典
-            use_tiered: 是否使用分层阈值（True使用配置的分层，False使用统一阈值）
-        """
+        """检查视频是否满足筛选条件 - 两段式：24h内看速率，24h+看总量"""
+        hours = video.get("hours_since_publish", 0)
         play_per_hour = video.get("play_per_hour", 0)
+        play_count = video.get("play_count", 0)
         
-        # 如果使用分层筛选
-        if use_tiered and self.tiered_filter:
-            hours = video.get("hours_since_publish", 0)
-            threshold = self.get_tiered_threshold(hours)
+        if not use_tiered or not self.tiered_filter:
+            # 统一阈值模式：全部按 play_per_hour 过滤
+            return play_per_hour > self.default_threshold
+        
+        if hours <= 24:
+            return play_per_hour > self.play_per_hour_threshold
+        elif hours <= 168:
+            return play_count > self.play_count_week_threshold
         else:
-            # 使用统一阈值
-            threshold = self.default_threshold
-        
-        return play_per_hour > threshold
+            return play_count > self.play_count_month_threshold
 
     def format_videos_message(self, videos: List[dict], keyword: str) -> str:
         """格式化视频列表为消息"""
@@ -933,7 +926,7 @@ class BilibiliPlugin(Star):
         self.config = config
         # 获取配置参数
         self.sessdata = config.get("sessdata", "")
-        self.keyword = config.get("default_keyword", "杀戮尖塔2")
+        self.keyword = config.get("default_keyword", "杀戮尖塔")
         self.order = config.get("order", "pubdate")
         self.target_count = config.get("target_count", 10)
         self.use_collect_mode = config.get("use_collect_mode", True)
@@ -943,13 +936,10 @@ class BilibiliPlugin(Star):
         # 分层筛选配置
         self.tiered_filter = config.get("tiered_filter", True)
         
-        # 解析分层时间节点
-        tier_hours_str = config.get("tier_hours", "5,24")
-        self.tier_hours = [int(x.strip()) for x in tier_hours_str.split(",") if x.strip()]
-        
-        # 解析分层阈值
-        tier_thresholds_str = config.get("tier_thresholds", "2000,1500,1000")
-        self.tier_thresholds = [float(x.strip()) for x in tier_thresholds_str.split(",") if x.strip()]
+        # 两段式筛选阈值配置
+        self.play_per_hour_threshold = config.get("play_per_hour_threshold", 1500.0)
+        self.play_count_week_threshold = config.get("play_count_week_threshold", 5000)
+        self.play_count_month_threshold = config.get("play_count_month_threshold", 3000)
         
         # 统一筛选阈值（用户指定数量时使用）
         self.default_threshold = config.get("default_threshold", 1500.0)
@@ -996,8 +986,9 @@ class BilibiliPlugin(Star):
         self.db = VideoDB(str(data_dir / "bilibili_video_history.db"))
 
         # 构建日志信息
-        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        tier_str = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+            self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+        )
         
         logger.info(
             f"B站爬虫插件已加载 | 关键词: {self.keyword} | 排序: {self.order} | 模式: {'集满' if self.use_collect_mode else '普通'} | 分层筛选: {'启用' if self.tiered_filter else '禁用'} | 阈值: {tier_str} | 统一阈值: {self.default_threshold}/h"
@@ -1094,8 +1085,9 @@ class BilibiliPlugin(Star):
         
         # 构建筛选信息
         if use_tiered:
-            tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-            tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+            tier_str = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+                self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+            )
             filter_info = f"筛选: {tier_str}"
         else:
             filter_info = f"统一阈值: >{self.default_threshold}/h"
@@ -1109,9 +1101,10 @@ class BilibiliPlugin(Star):
         spider = BilibiliSpider(
             sessdata=self.sessdata,
             tiered_filter=use_tiered,
-            tier_hours=self.tier_hours,
-            tier_thresholds=self.tier_thresholds,
             default_threshold=self.default_threshold,
+            play_per_hour_threshold=self.play_per_hour_threshold,
+            play_count_week_threshold=self.play_count_week_threshold,
+            play_count_month_threshold=self.play_count_month_threshold,
         )
 
         # 根据模式搜索
@@ -1161,8 +1154,9 @@ class BilibiliPlugin(Star):
                     # 构建搜索条件描述
                     order_cn = order_names.get(self.order, self.order)
                     # 构建分层筛选描述
-                    tier_desc = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-                    tier_desc += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+                    tier_desc = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+                        self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+                    )
                     search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
                     summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
                     llm_resp = await self.context.llm_generate(
@@ -1243,8 +1237,9 @@ class BilibiliPlugin(Star):
         order = self.order
 
         # 构建分层筛选信息
-        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        tier_str = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+            self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+        )
         
         # 发送正在搜索的提示
         order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
@@ -1258,9 +1253,10 @@ class BilibiliPlugin(Star):
         spider = BilibiliSpider(
             sessdata=self.sessdata,
             tiered_filter=self.tiered_filter,
-            tier_hours=self.tier_hours,
-            tier_thresholds=self.tier_thresholds,
             default_threshold=self.default_threshold,
+            play_per_hour_threshold=self.play_per_hour_threshold,
+            play_count_week_threshold=self.play_count_week_threshold,
+            play_count_month_threshold=self.play_count_month_threshold,
         )
 
         if self.use_collect_mode:
@@ -1307,8 +1303,9 @@ class BilibiliPlugin(Star):
                     # 构建搜索条件描述
                     order_cn = order_names.get(order, order)
                     # 构建分层筛选描述
-                    tier_desc = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-                    tier_desc += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+                    tier_desc = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+                        self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+                    )
                     search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
                     summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
                     llm_resp = await self.context.llm_generate(
@@ -1332,8 +1329,9 @@ class BilibiliPlugin(Star):
             "stow": "按收藏数"
         }
         # 构建分层筛选描述
-        tier_str = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-        tier_str += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+        tier_str = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+            self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+        )
         
         lines = [
             "⚙️ B站爬虫插件当前配置:",
@@ -1623,9 +1621,10 @@ class BilibiliPlugin(Star):
         spider = BilibiliSpider(
             sessdata=self.sessdata,
             tiered_filter=use_tiered,
-            tier_hours=self.tier_hours,
-            tier_thresholds=self.tier_thresholds,
             default_threshold=self.default_threshold,
+            play_per_hour_threshold=self.play_per_hour_threshold,
+            play_count_week_threshold=self.play_count_week_threshold,
+            play_count_month_threshold=self.play_count_month_threshold,
         )
         
         # 搜索视频
@@ -1670,8 +1669,9 @@ class BilibiliPlugin(Star):
                 if provider_id:
                     order_cn = order_names.get(self.order, self.order)
                     # 构建分层筛选描述
-                    tier_desc = ", ".join([f"{self.tier_hours[i]}h内>{self.tier_thresholds[i]}/h" for i in range(len(self.tier_hours))])
-                    tier_desc += f", {self.tier_hours[-1]}h+>{self.tier_thresholds[-1]}/h"
+                    tier_desc = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
+                        self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
+                    )
                     search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
                     summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
                     llm_resp = await self.context.llm_generate(

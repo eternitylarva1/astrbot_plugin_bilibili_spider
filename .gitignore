@@ -11,3 +11,6 @@ build/
 .idea/
 .vscode/
 *.log
+copy_db.bat
+parse_db.py
+scripts/
