@@ -769,35 +769,6 @@ class BilibiliSpider:
 
         return "\n".join(lines)
 
-    def format_videos_plain(self, videos: List[dict], keyword: str, order: str = "pubdate") -> str:
-        """格式化视频列表为纯文本（供 LLM 工具使用）"""
-        if not videos:
-            return f"未找到关于「{keyword}」的视频"
-        
-        order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
-        order_cn = order_names.get(order, order)
-        
-        lines = [f"B站视频搜索结果（关键词：{keyword}，排序：{order_cn}）:"]
-        
-        for i, video in enumerate(videos, 1):
-            lines.append(f"{i}. {video['title']}")
-            lines.append(f"BV号: {video['bvid']}")
-            lines.append(f"链接: {video['url']}")
-            
-            info_parts = [
-                f"UP: {video.get('author', '')}",
-                f"播放: {video.get('play_count', 0):,}",
-                f"弹幕: {video.get('video_review', 0)}",
-                f"发布时间: {video.get('pubdate_str', '')}",
-            ]
-            play_per_hour = video.get("play_per_hour", 0)
-            if play_per_hour:
-                info_parts.append(f"播放速率: {play_per_hour:.0f}/h")
-            lines.append(" | ".join(info_parts))
-            lines.append("")
-        
-        return "\n".join(lines)
-
 
 def random_comment(comment_library: List[dict]) -> str:
     """从评论词库中随机选择一个评论"""
@@ -1639,7 +1610,7 @@ class BilibiliPlugin(Star):
         if videos:
             self.db.upsert_videos(videos)
         
-        result_text = spider.format_videos_plain(videos, keyword, self.order)
+        result_text = spider.format_videos_message(videos, keyword)
         
         # AI 总结
         if summary and self.enable_analysis and self.analysis_prompt:
