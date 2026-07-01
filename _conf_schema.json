@@ -14,7 +14,7 @@
   "default_keyword": {
     "description": "默认搜索关键词",
     "type": "string",
-    "default": "杀戮尖塔2"
+    "default": "杀戮尖塔"
   },
   "order": {
     "description": "排序方式",
@@ -41,12 +41,6 @@
     "default": 50,
     "hint": "仅在普通模式下生效"
   },
-  "tiered_filter": {
-    "description": "启用两段式筛选（24h内按播放速率，24h+按总播放量）",
-    "type": "bool",
-    "default": true,
-    "hint": "仅默认配置时生效；用户指定数量时使用统一阈值"
-  },
   "play_per_hour_threshold": {
     "description": "24小时内视频的播放速率阈值（播放量/小时）",
     "type": "int",
@@ -64,12 +58,6 @@
     "type": "int",
     "default": 3000,
     "hint": "发布时间超过1周的视频，总播放量需大于此值"
-  },
-  "default_threshold": {
-    "description": "用户指定数量时的统一筛选阈值（播放量/小时）",
-    "type": "float",
-    "default": 1500.0,
-    "hint": "当用户指定数量时使用此阈值，不再分段"
   },
   "export_json": {
     "description": "是否导出JSON文件",
