@@ -1582,64 +1582,19 @@ class BilibiliPlugin(Star):
         """
         count = min(count, 25)
         
-        spider = BilibiliSpider(
-            sessdata=self.sessdata,
-            play_per_hour_threshold=self.play_per_hour_threshold,
-            play_count_week_threshold=self.play_count_week_threshold,
-            play_count_month_threshold=self.play_count_month_threshold,
-        )
+        # 构造命令字符串，直接调用命令处理器
+        cmd = f"/b站搜索 {keyword} {count}"
+        if summary:
+            cmd += " 总结"
         
-        if self.use_collect_mode:
-            videos = spider.search_videos_until_filtered(
-                keyword, min_filtered_count=count, order=self.order
-            )
-        else:
-            videos = spider.search_videos_normal(
-                keyword, max_count=count, enable_filter=True, order=self.order
-            )
-        
-        if videos is None:
-            yield event.plain_result("搜索失败：B站访问过于频繁，请稍后再试")
-            return
-        
-        # 分页结果（每页10个）
-        CHUNK_SIZE = 10
-        total_videos = len(videos)
-        total_chunks = (total_videos + CHUNK_SIZE - 1) // CHUNK_SIZE
-        
-        nodes = []
-        for chunk_idx in range(total_chunks):
-            start_idx = chunk_idx * CHUNK_SIZE
-            end_idx = min(start_idx + CHUNK_SIZE, total_videos)
-            chunk_videos = videos[start_idx:end_idx]
-            chunk_msg = spider.format_video_chunk(
-                chunk_videos, keyword, chunk_idx + 1, total_chunks, start_idx + 1
-            )
-            nodes.append(Comp.Node(content=[Comp.Plain(chunk_msg)]))
-        
-        # AI 总结
-        if summary and videos and self.enable_analysis and self.analysis_prompt:
-            try:
-                umo = event.unified_msg_origin
-                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
-                if provider_id:
-                    order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
-                    order_cn = order_names.get(self.order, self.order)
-                    tier_desc = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
-                        self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
-                    )
-                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
-                    summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
-                    llm_resp = await self.context.llm_generate(
-                        chat_provider_id=provider_id,
-                        prompt=summary_prompt,
-                    )
-                    summary_result = llm_resp.completion_text
-                    nodes.append(Comp.Node(content=[Comp.Plain(f"📝 AI总结：\n{summary_result}")]))
-            except Exception as e:
-                logger.error(f"AI总结失败: {e}")
-        
-        yield event.chain_result(nodes)
+        # 临时修改 event.message_str 以模拟用户命令输入
+        original_msg = event.message_str
+        event.message_str = cmd
+        try:
+            async for result in self.bilibili_search(event):
+                yield result
+        finally:
+            event.message_str = original_msg
 
     async def terminate(self):
         """插件卸载时调用"""
