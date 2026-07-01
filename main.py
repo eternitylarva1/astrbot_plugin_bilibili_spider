@@ -769,6 +769,35 @@ class BilibiliSpider:
 
         return "\n".join(lines)
 
+    def format_videos_plain(self, videos: List[dict], keyword: str, order: str = "pubdate") -> str:
+        """格式化视频列表为纯文本（供 LLM 工具使用）"""
+        if not videos:
+            return f"未找到关于「{keyword}」的视频"
+        
+        order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
+        order_cn = order_names.get(order, order)
+        
+        lines = [f"B站视频搜索结果（关键词：{keyword}，排序：{order_cn}）:"]
+        
+        for i, video in enumerate(videos, 1):
+            lines.append(f"{i}. {video['title']}")
+            lines.append(f"BV号: {video['bvid']}")
+            lines.append(f"链接: {video['url']}")
+            
+            info_parts = [
+                f"UP: {video.get('author', '')}",
+                f"播放: {video.get('play_count', 0):,}",
+                f"弹幕: {video.get('video_review', 0)}",
+                f"发布时间: {video.get('pubdate_str', '')}",
+            ]
+            play_per_hour = video.get("play_per_hour", 0)
+            if play_per_hour:
+                info_parts.append(f"播放速率: {play_per_hour:.0f}/h")
+            lines.append(" | ".join(info_parts))
+            lines.append("")
+        
+        return "\n".join(lines)
+
 
 def random_comment(comment_library: List[dict]) -> str:
     """从评论词库中随机选择一个评论"""
@@ -1572,16 +1601,14 @@ class BilibiliPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     @filter.llm_tool(name="bilibili_search")
-    async def bilibili_search_tool(self, event: AstrMessageEvent, keyword: str, count: int = 10, summary: bool = False, comment: bool = False) -> MessageEventResult:
+    async def bilibili_search_tool(self, event: AstrMessageEvent, keyword: str, count: int = 10, summary: bool = False) -> MessageEventResult:
         """搜索B站视频，根据播放量和发布时间筛选高质量视频。
         
         Args:
-            keyword(string): 搜索关键词，例如"我的世界"、"杀戮尖塔2"等
+            keyword(string): 搜索关键词，例如"我的世界"、"杀戮尖塔"等
             count(number): 返回的视频数量，默认10个，最多25个
             summary(boolean): 是否启用AI总结，默认False
-            comment(boolean): 是否评论第一个视频，默认False
         """
-        # 限制数量
         count = min(count, 25)
         
         spider = BilibiliSpider(
@@ -1591,7 +1618,6 @@ class BilibiliPlugin(Star):
             play_count_month_threshold=self.play_count_month_threshold,
         )
         
-        # 搜索视频
         if self.use_collect_mode:
             videos = spider.search_videos_until_filtered(
                 keyword, min_filtered_count=count, order=self.order
@@ -1605,93 +1631,37 @@ class BilibiliPlugin(Star):
             yield event.plain_result("搜索失败：B站访问过于频繁，请稍后再试")
             return
         
-        # 构建转发消息
-        nodes = []
+        if not videos:
+            yield event.plain_result(f"未找到关于「{keyword}」满足筛选条件的视频")
+            return
         
-        # 分页结果（每页10个）
-        CHUNK_SIZE = 10
-        total_videos = len(videos)
-        total_chunks = (total_videos + CHUNK_SIZE - 1) // CHUNK_SIZE
+        # 保存到历史数据库
+        if videos:
+            self.db.upsert_videos(videos)
         
-        order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
+        result_text = spider.format_videos_plain(videos, keyword, self.order)
         
-        for chunk_idx in range(total_chunks):
-            start_idx = chunk_idx * CHUNK_SIZE
-            end_idx = min(start_idx + CHUNK_SIZE, total_videos)
-            chunk_videos = videos[start_idx:end_idx]
-            
-            chunk_msg = spider.format_video_chunk(
-                chunk_videos, keyword, chunk_idx + 1, total_chunks, start_idx + 1
-            )
-            nodes.append(Comp.Node(content=[Comp.Plain(chunk_msg)]))
-        
-        # AI 总结（如果启用）
-        if summary and videos and self.enable_analysis and self.analysis_prompt:
+        # AI 总结
+        if summary and self.enable_analysis and self.analysis_prompt:
             try:
                 umo = event.unified_msg_origin
                 provider_id = await self.context.get_current_chat_provider_id(umo=umo)
                 if provider_id:
+                    order_names = {"pubdate": "发布时间", "click": "播放量", "stow": "收藏数"}
                     order_cn = order_names.get(self.order, self.order)
-                    # 构建分层筛选描述
                     tier_desc = "24h内>{}/小时 | 1周内>{}播放 | 1周+>{}播放".format(
                         self.play_per_hour_threshold, self.play_count_week_threshold, self.play_count_month_threshold
                     )
-                    search_context = f"以上信息是：B站搜索「{keyword}」，以分层筛选({tier_desc})，排序按{order_cn}，筛选{count}个视频的结果，请你"
-                    summary_prompt = f"{search_context}\n\n{self.analysis_prompt}\n\n以下是B站视频搜索结果（共{total_videos}个视频）：\n{spider.format_videos_message(videos, keyword)}"
+                    summary_prompt = f"以上信息是：B站搜索「{keyword}」，筛选规则({tier_desc})，排序按{order_cn}，以下是{len(videos)}个视频结果。{self.analysis_prompt}\n\n{result_text}"
                     llm_resp = await self.context.llm_generate(
                         chat_provider_id=provider_id,
                         prompt=summary_prompt,
                     )
-                    summary_result = llm_resp.completion_text
-                    nodes.append(Comp.Node(content=[Comp.Plain(f"📝 AI总结：\n{summary_result}")]))
+                    result_text += f"\n\n📝 AI总结：\n{llm_resp.completion_text}"
             except Exception as e:
                 logger.error(f"AI总结失败: {e}")
         
-        # 发送合并转发消息
-        yield event.chain_result(nodes)
-        
-        # 评论（如果启用）- 评论所有视频
-        if comment and videos and self.comment_sender:
-            yield event.plain_result(f"📝 开始评论，共 {len(videos)} 个视频")
-            
-            # 使用LLM为每个视频选择评论
-            if self.use_llm_select_comment and len(videos) <= 25:
-                yield event.plain_result("🤖 正在使用LLM智能选择评论...")
-                comment_map = await llm_select_comment(self, event, videos, self.comment_library)
-                yield event.plain_result(f"✅ LLM选择完成，开始评论")
-            else:
-                unified_comment = random_comment(self.comment_library)
-                comment_map = {video.get("bvid"): unified_comment for video in videos}
-            
-            success_count = 0
-            skip_count = 0
-            fail_count = 0
-            
-            for i, video in enumerate(videos):
-                bvid = video.get("bvid")
-                title = video.get("title", "")
-                selected = comment_map.get(bvid, "")
-                if isinstance(selected, dict):
-                    selected = selected.get("comment", "这期神了")
-                if not selected:
-                    selected = random_comment(self.comment_library)
-                
-                yield event.plain_result(f"   [{i+1}/{len(videos)}] {title}")
-                yield event.plain_result(f"       💬 {selected}")
-                
-                success, msg = await self.comment_sender.send_comment(bvid, selected)
-                
-                if success:
-                    success_count += 1
-                    yield event.plain_result(f"       ✅ 成功")
-                elif "已评论过" in msg:
-                    skip_count += 1
-                    yield event.plain_result(f"       ⏭️ 跳过")
-                else:
-                    fail_count += 1
-                    yield event.plain_result(f"       ❌ 失败: {msg}")
-            
-            yield event.plain_result(f"\n📊 评论完成！成功: {success_count} | 跳过: {skip_count} | 失败: {fail_count}")
+        yield event.plain_result(result_text)
 
     async def terminate(self):
         """插件卸载时调用"""
