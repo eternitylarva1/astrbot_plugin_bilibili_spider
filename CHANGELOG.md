@@ -4,6 +4,13 @@
 
 ---
 
+## [1.2.2] - 2026-07-02
+
+### Removed
+- **移除 `bilibili_search` LLM 工具**：AstrBot 的 `ContextWrapper` 不支持 `chain_result`（合并转发），导致工具输出格式与命令不一致。改为通过 `/b站搜索` 指令使用。
+
+---
+
 ## [1.2.1] - 2026-07-01
 
 ### Changed
