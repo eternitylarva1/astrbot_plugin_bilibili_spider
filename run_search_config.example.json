@@ -1,0 +1,7 @@
+{
+  "_comment": "run_search.py 的配置文件。也可以通过环境变量覆盖：QQ_USER_ID, QQ_NICKNAME, NAPCAT_URL, BILIBILI_SESSDATA",
+  "qq_user_id": 2674610176,
+  "qq_nickname": "B站爬虫",
+  "napcat_url": "http://127.0.0.1:3000",
+  "bilibili_sessdata": ""
+}
