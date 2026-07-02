@@ -4,6 +4,17 @@
 
 ---
 
+## [1.2.1] - 2026-07-01
+
+### Changed
+- **简化筛选配置**：移除 `tiered_filter` 和 `default_threshold`，全部统一使用两段式筛选（24h内看速率，24h+看播放总量）
+- **LLM 工具重构**：`bilibili_search` 工具改为自包含实现，输出格式与 `/b站搜索` 命令完全一致（合并转发 + AI 总结）
+
+### Fixed
+- 修复 LLM 工具在 `ContextWrapper` 下的兼容性问题
+
+---
+
 ## [1.2.0] - 2026-06-30
 
 ### Changed
